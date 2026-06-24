@@ -30,6 +30,7 @@ from ble_hop_graph import HOP_GRAPH
 from ble_location import SCANNER_LOCATION, reverse_geocode
 from ble_paired_windows import load_all_paired_names
 from ble_tactical import SCENARIOS, TACTICAL, mission_label
+from ble_sci_fi import SCI_FI, THEORY_CATALOG, generate_mission_brief
 
 PORT = 8765
 DISCOVER_ON_STOP_SEC = 3.0
@@ -93,9 +94,9 @@ class ScanState:
                 key=lambda d: d.get("rssi") if d.get("rssi") is not None else -999,
                 reverse=True,
             )
-            TACTICAL.on_scan_tick(len(device_list))
-            tactical = TACTICAL.snapshot(self.phase, hop_graph)
-            return {
+            TACTICAL.on_scan_tick(len(device_list), device_list, hop_graph)
+            tactical = TACTICAL.snapshot(self.phase, hop_graph, device_list)
+            snap = {
                 "phase": self.phase,
                 "missionLabel": mission_label(self.phase),
                 "running": self.phase in ("running", "resolving", "pulling"),
@@ -116,6 +117,8 @@ class ScanState:
                 "hopGraph": hop_graph,
                 "tactical": tactical,
             }
+            TACTICAL.record_replay(snap)
+            return snap
 
     def begin(self) -> None:
         with self.lock:
@@ -502,7 +505,29 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/chrono":
-            self._send_json(200, {"events": TACTICAL.snapshot(STATE.phase, HOP_GRAPH.snapshot()).get("chrono", [])})
+            snap = STATE.snapshot()
+            self._send_json(200, {"events": snap.get("tactical", {}).get("chrono", [])})
+            return
+
+        if path == "/api/theories":
+            self._send_json(200, {"theories": THEORY_CATALOG, "sciFi": SCI_FI.snapshot([], HOP_GRAPH.snapshot(), {}, {})})
+            return
+
+        if path == "/api/brief":
+            snap = STATE.snapshot()
+            brief = generate_mission_brief(snap)
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            body = brief.encode("utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
+        if path == "/api/replay":
+            snap = STATE.snapshot()
+            frames = (snap.get("tactical") or {}).get("sciFi", {}).get("replayFrames", [])
+            self._send_json(200, {"frames": frames})
             return
 
         if path == "/api/scenario":
@@ -532,8 +557,18 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/extract":
             qs = parse_qs(urlparse(self.path).query)
             fmt = (qs.get("format") or ["json"])[0]
+            password = (qs.get("password") or [""])[0]
             snap = STATE.snapshot()
             package = TACTICAL.build_extraction_package(snap, snap["hopGraph"])
+            if fmt == "cipher" and password:
+                body = TACTICAL.build_cipher_exfil(package, password)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/zip")
+                self.send_header("Content-Disposition", 'attachment; filename="houseofasher_cipher.zip"')
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
             if fmt == "zip":
                 body = TACTICAL.build_extraction_zip(package)
                 self.send_response(200)
@@ -581,6 +616,10 @@ class Handler(BaseHTTPRequestHandler):
             payload = self._read_json()
             try:
                 HOP_GRAPH.register_scanner_report(payload)
+                node_id = str(payload.get("nodeId") or "")
+                if payload.get("listeningPost") and node_id:
+                    SCI_FI.register_listening_post(node_id)
+                    TACTICAL.log("deaddrop", f"LISTENING POST online · {payload.get('nodeLabel', node_id)}", {"nodeId": node_id})
                 self._send_json(200, {"ok": True, "hopGraph": HOP_GRAPH.snapshot()})
             except ValueError as exc:
                 self._send_json(400, {"error": str(exc)})

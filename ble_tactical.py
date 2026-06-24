@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from ble_device_naming import DeviceSignals, format_mac, normalize_mac
+from ble_sci_fi import SCI_FI, generate_mission_brief, build_cipher_zip
 
 MissionPhase = Literal["idle", "running", "resolving", "pulling", "completed", "failed"]
 ThreatTier = Literal["friendly", "known", "unknown", "priority", "breach"]
@@ -297,6 +298,7 @@ class TacticalEngine:
             self.packet_samples.clear()
             self.last_device_count = 0
             self._log("mission", "MISSION START — tactical sweep initiated", {"missionId": self.mission_id})
+        SCI_FI.reset()
 
     def _log(self, event_type: str, message: str, details: dict[str, Any] | None = None) -> None:
         event = ChronoEvent(time.time(), event_type, message, details or {})
@@ -332,6 +334,8 @@ class TacticalEngine:
         signals: DeviceSignals,
         record: dict[str, Any],
         hop_depth: int | None = None,
+        hop_graph: dict[str, Any] | None = None,
+        paired_names: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         mac = format_mac(signals.address)
         nmac = normalize_mac(mac)
@@ -393,6 +397,15 @@ class TacticalEngine:
         )
         trend = movement_trend(list(self.trails.get(nmac, [])))
 
+        sci = SCI_FI.analyze_device(
+            signals,
+            {**record, "fingerprint": fp, "ghostTrail": list(self.trails.get(nmac, [])), "hopDepth": hop_depth},
+            hop_graph or {},
+            paired_names or {},
+            dict(self.fingerprints),
+            self.log,
+        )
+
         return {
             "threatTier": tier,
             "fingerprint": fp,
@@ -400,6 +413,7 @@ class TacticalEngine:
             "onWatchlist": on_watchlist,
             "ghostTrail": list(self.trails.get(nmac, [])),
             "knownEmitter": self.fingerprint_history.get(fp, {}).get("firstSeen", now) < now - 60,
+            "sciFi": sci,
         }
 
     def on_name_resolved(self, mac: str, old_name: str, new_name: str, source: str) -> None:
@@ -413,11 +427,19 @@ class TacticalEngine:
     def on_phase_change(self, phase: str) -> None:
         self.log("phase", f"PHASE → {mission_label(phase)}", {"phase": phase, "missionLabel": mission_label(phase)})
 
-    def on_scan_tick(self, device_count: int) -> None:
+    def on_scan_tick(self, device_count: int, devices: list[dict[str, Any]] | None = None, hop_graph: dict[str, Any] | None = None) -> None:
         now = time.time()
         with self.lock:
             self.packet_samples.append((now, device_count))
             self.last_device_count = device_count
+        if devices is not None:
+            SCI_FI.tick_presence(devices)
+            active = {normalize_mac(d.get("macAddress") or d.get("id", "")) for d in devices}
+            by_mac = {normalize_mac(d.get("macAddress") or d.get("id", "")): d for d in devices}
+            SCI_FI.tick_lost_devices(active, by_mac, self.log)
+            if hop_graph:
+                SCI_FI.update_custody(devices, hop_graph)
+                SCI_FI.record_worm(hop_graph.get("maxHopDepth", 0), hop_graph.get("nodeCount", 0))
 
     def interference_level(self) -> dict[str, Any]:
         with self.lock:
@@ -470,12 +492,20 @@ class TacticalEngine:
             "dossierNote": "Tactical intel card — MAC is hardware ID, not street address.",
         }
 
-    def snapshot(self, phase: str, hop_graph: dict[str, Any]) -> dict[str, Any]:
+    def snapshot(self, phase: str, hop_graph: dict[str, Any], devices: list[dict[str, Any]] | None = None) -> dict[str, Any]:
         with self.lock:
             chrono = [e.to_dict() for e in list(self.chrono)[-100:]]
             alerts = list(self.alerts)[-20:]
             watchlist = [format_mac(m) if len(m) == 12 else m for m in self.watchlist]
             fp_count = len(self.fingerprint_history)
+            fp_by_mac = dict(self.fingerprints)
+
+        sci_snap = SCI_FI.snapshot(
+            devices or [],
+            hop_graph,
+            self.fingerprint_history,
+            fp_by_mac,
+        )
 
         return {
             "brand": "houseofasher",
@@ -491,7 +521,11 @@ class TacticalEngine:
             "relayScores": relay_scores(hop_graph),
             "dominoBreaches": domino_breach_chains(hop_graph),
             "ticker": chrono[-1]["message"] if chrono else "AWAITING ORDERS",
+            "sciFi": sci_snap,
         }
+
+    def record_replay(self, full_snapshot: dict[str, Any]) -> None:
+        SCI_FI.record_replay_frame(full_snapshot)
 
     def build_extraction_package(
         self,
@@ -516,6 +550,13 @@ class TacticalEngine:
             "relayScores": relay_scores(hop_graph),
             "chrono": [e.to_dict() for e in self.chrono],
             "interference": self.interference_level(),
+            "sciFi": SCI_FI.snapshot(devices, hop_graph, self.fingerprint_history, dict(self.fingerprints)),
+            "missionBrief": generate_mission_brief({
+                "count": scan_snapshot.get("count", 0),
+                "tactical": {"missionId": self.mission_id, "missionLabel": mission_label(scan_snapshot.get("phase", "completed")),
+                             "dominoBreaches": domino_breach_chains(hop_graph), "chrono": [e.to_dict() for e in self.chrono]},
+                "hopGraph": hop_graph,
+            }),
         }
 
     def build_extraction_zip(self, package: dict[str, Any]) -> bytes:
@@ -530,6 +571,7 @@ class TacticalEngine:
                 "hop_graph.json",
                 json.dumps(package.get("hopGraph", {}), indent=2, default=str),
             )
+            zf.writestr("mission_brief.txt", package.get("missionBrief", ""))
             readme = (
                 "# houseofasher tactical exfil package\n"
                 f"Mission: {package.get('missionId')}\n"
@@ -537,6 +579,9 @@ class TacticalEngine:
             )
             zf.writestr("README.txt", readme)
         return buf.getvalue()
+
+    def build_cipher_exfil(self, package: dict[str, Any], password: str) -> bytes:
+        return build_cipher_zip(package, password)
 
 
 TACTICAL = TacticalEngine()

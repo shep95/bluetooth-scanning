@@ -105,7 +105,7 @@ def build_device_record(
     else:
         record["pullStatus"] = "empty"
 
-    tactical = TACTICAL.on_device_update(signals, record, hop_depth)
+    tactical = TACTICAL.on_device_update(signals, record, hop_depth, hop_graph, paired_names)
     record.update(tactical)
     if hop_graph:
         tri = TACTICAL.build_dossier(record, hop_graph).get("triangulation")

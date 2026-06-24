@@ -97,6 +97,19 @@
     @keyframes slideIn { from { transform: translateY(20px); opacity: 0; } }
     .legend { font-size: 0.72rem; color: var(--muted); }
     code { color: var(--cyan); font-size: 0.85em; }
+    body.quantum-decoherence { animation: glitch 0.15s infinite; }
+    @keyframes glitch {
+      0% { filter: hue-rotate(0deg); }
+      50% { filter: hue-rotate(20deg) contrast(1.2); }
+      100% { filter: hue-rotate(-10deg); }
+    }
+    .device.team-red { border-color: var(--red); }
+    .device.team-blue { border-color: var(--cyan); }
+    .device.team-purple { border-color: #b366ff; }
+    #threatBoard { font-size: 0.78rem; }
+    #sciFiPanel, #replayPanel, #theoriesPanel { font-size: 0.72rem; }
+    .sci-tag { display: inline-block; margin: 0.1rem; padding: 0.1rem 0.3rem; border: 1px solid var(--border); border-radius: 3px; color: var(--amber); }
+    #replaySlider { width: 100%; }
   </style>
 </head>
 <body>
@@ -117,7 +130,10 @@
           <button id="startBtn" class="primary" disabled>SWEEP</button>
           <button id="stopBtn" type="button">SYNC HOPS</button>
           <button id="extractBtn" type="button">EXFIL PACKAGE</button>
+          <button id="briefBtn" type="button">MISSION BRIEF</button>
+          <button id="voiceBtn" type="button">VOICE CMD</button>
           <label class="legend"><input type="checkbox" id="audioToggle" checked /> Sonar audio</label>
+          <label class="legend"><input type="checkbox" id="redBlueToggle" checked /> Red/blue team</label>
         </div>
         <div id="status" class="meta">Idle.</div>
         <div id="location" class="meta" style="margin-top:0.5rem;">
@@ -133,12 +149,30 @@
       </div>
 
       <div class="panel">
+        <h2>Sci-fi intel layer</h2>
+        <div id="sciFiPanel" class="meta">Awaiting theories…</div>
+      </div>
+
+      <div class="panel">
         <h2>Signal contacts</h2>
         <ul id="list"><li class="meta">No devices yet.</li></ul>
       </div>
     </main>
 
     <aside>
+      <div class="panel">
+        <h2>Threat board</h2>
+        <div id="threatBoard" class="meta">Rotating priority contacts…</div>
+      </div>
+      <div class="panel">
+        <h2>Mission replay</h2>
+        <input type="range" id="replaySlider" min="0" max="0" value="0" />
+        <div id="replayPanel" class="meta">No frames yet.</div>
+      </div>
+      <div class="panel">
+        <h2>Theory catalog</h2>
+        <div id="theoriesPanel" class="meta"></div>
+      </div>
       <div class="panel">
         <h2>Chrono blackbox</h2>
         <ul id="chrono"></ul>
@@ -185,7 +219,16 @@
     const toast = document.getElementById("toast");
     const audioToggle = document.getElementById("audioToggle");
     const extractBtn = document.getElementById("extractBtn");
+    const briefBtn = document.getElementById("briefBtn");
+    const voiceBtn = document.getElementById("voiceBtn");
+    const redBlueToggle = document.getElementById("redBlueToggle");
+    const sciFiPanel = document.getElementById("sciFiPanel");
+    const threatBoard = document.getElementById("threatBoard");
+    const replaySlider = document.getElementById("replaySlider");
+    const replayPanel = document.getElementById("replayPanel");
+    const theoriesPanel = document.getElementById("theoriesPanel");
     const sseStatus = document.getElementById("sseStatus");
+    let threatRotate = 0;
 
     const TIER_LABELS = { friendly: "ALLY", known: "KNOWN", unknown: "UNKNOWN", priority: "TARGET LOCK", breach: "DEEP BREACH" };
     const TREND_LABELS = { approaching: "↗ APPROACHING", receding: "↘ RECEDING", static: "● HOLDING", unknown: "?" };
@@ -316,6 +359,71 @@
       breachChains.innerHTML = (tac.dominoBreaches || []).slice(0, 5).map((c) =>
         `<div class="breach-chain"><strong>${escapeHtml(c.breachLabel || c.target)}</strong><br>${(c.path || []).map(escapeHtml).join(" → ")}</div>`
       ).join("");
+
+      document.body.classList.toggle("quantum-decoherence", intf.level === "critical");
+
+      renderSciFi(tac.sciFi || {});
+    }
+
+    function renderSciFi(sci) {
+      if (!sci) return;
+      const lines = [
+        `Quorum confirmed: ${sci.quorumConfirmed ?? 0}`,
+        `Clone clusters: ${(sci.cloneClusters || []).length}`,
+        `Spoof alerts: ${(sci.spoofAlerts || []).length}`,
+        `Resurrections: ${(sci.resurrections || []).length}`,
+        `Anomalies: ${(sci.anomalies || []).length}`,
+        `Cohort clusters: ${(sci.cohortClusters || []).length}`,
+        `Listening posts: ${(sci.listeningPosts || []).length}`,
+      ];
+      sciFiPanel.innerHTML = lines.map((l) => `<div>${escapeHtml(l)}</div>`).join("");
+
+      const worm = (sci.wormTimeline || []).slice(-8);
+      if (worm.length) {
+        sciFiPanel.innerHTML += "<div style='margin-top:0.5rem'><strong>Worm spread</strong><br>" +
+          worm.map((w) => `depth ${w.maxHopDepth} @ ${new Date(w.ts * 1000).toLocaleTimeString()}`).join("<br>") + "</div>";
+      }
+
+      const tom = (sci.tomography || []).slice(0, 4);
+      if (tom.length) {
+        sciFiPanel.innerHTML += "<div style='margin-top:0.5rem'><strong>Tomography grid</strong><br>" +
+          tom.map((z) => `${escapeHtml(z.node)}: heat ${z.heat}`).join("<br>") + "</div>";
+      }
+
+      const frames = sci.replayFrames || [];
+      replaySlider.max = Math.max(0, frames.length - 1);
+      replaySlider.value = frames.length ? frames.length - 1 : 0;
+      replayPanel.textContent = frames.length
+        ? `${frames.length} frames · latest ${frames[frames.length - 1].count} contacts`
+        : "No frames yet.";
+    }
+
+    replaySlider.addEventListener("input", async () => {
+      const res = await fetch("/api/replay");
+      const data = await res.json();
+      const f = (data.frames || [])[Number(replaySlider.value)];
+      if (f) replayPanel.textContent = `Replay @ ${new Date(f.ts * 1000).toLocaleTimeString()} · ${f.count} contacts · hop ${f.maxHopDepth}`;
+    });
+
+    async function loadTheories() {
+      const res = await fetch("/api/theories");
+      const data = await res.json();
+      theoriesPanel.innerHTML = (data.theories || []).slice(0, 10).map((t) =>
+        `<div style="margin-bottom:0.4rem"><strong>${escapeHtml(t.id)}</strong> ${escapeHtml(t.narrative)}<br>
+        <span class="meta">Flaw: ${escapeHtml(t.flaw)} → Fix: ${escapeHtml(t.fix)}</span></div>`
+      ).join("");
+    }
+
+    function renderThreatBoard(devices) {
+      if (!devices.length) { threatBoard.textContent = "No contacts."; return; }
+      const ranked = [...devices].sort((a, b) => (b.rssi ?? -999) - (a.rssi ?? -999));
+      threatRotate = (threatRotate + 1) % ranked.length;
+      const top = ranked.slice(threatRotate, threatRotate + 3).concat(ranked.slice(0, Math.max(0, 3 - (ranked.length - threatRotate))));
+      threatBoard.innerHTML = top.map((d, i) =>
+        `<div style="padding:0.3rem 0"><strong>#${i + 1} ${escapeHtml(d.displayName || d.id)}</strong>
+        <span class="sci-tag">${escapeHtml(d.threatTier || "?")}</span>
+        <span class="meta">RSSI ${d.rssi ?? "?"} · ${escapeHtml((d.sciFi?.quorum?.status) || "?")}</span></div>`
+      ).join("");
     }
 
     function renderDevices(devices) {
@@ -331,12 +439,23 @@
         const fp = d.fingerprint ? `<span class="meta">Signature: <code>${escapeHtml(d.fingerprint)}</code></span>` : "";
         const watchBtn = `<button type="button" class="watchBtn" data-id="${escapeHtml(d.id)}">${d.onWatchlist ? "★ LOCKED" : "☆ LOCK"}</button>`;
         const dossierId = "dossier-" + escapeHtml(d.id).replace(/:/g, "");
-        return `<li class="device${pri}" data-id="${escapeHtml(d.id)}">
+        const teamClass = !redBlueToggle.checked ? "" :
+          d.threatTier === "friendly" || d.threatTier === "known" ? " team-blue" :
+          d.onWatchlist ? " team-purple" : " team-red";
+        const sci = d.sciFi || {};
+        const tags = [
+          sci.dialect?.dialect,
+          sci.quorum?.status,
+          sci.pursuit?.bearing,
+          sci.geofence?.breach ? "BREACH" : null,
+        ].filter(Boolean).map((t) => `<span class="sci-tag">${escapeHtml(t)}</span>`).join("");
+        return `<li class="device${pri}${teamClass}" data-id="${escapeHtml(d.id)}">
           ${ring}
           <strong>${escapeHtml(d.displayName || d.name || "Unknown")}
             <span class="tier ${escapeHtml(tier)}">${TIER_LABELS[tier] || tier}</span>
           </strong>
           <span class="meta">~${escapeHtml(d.distanceLabel || "?")} · RSSI ${d.rssi ?? "?"} dBm · ${trend}</span>
+          <div>${tags}</div>
           <span class="meta">MAC <code>${escapeHtml(d.macAddress || d.id)}</code></span>
           ${fp}
           ${watchBtn}
@@ -375,6 +494,7 @@
       const tac = data.tactical;
       renderTactical(tac);
       renderDevices(data.devices ?? []);
+      renderThreatBoard(data.devices ?? []);
       updateBattlefield(data.hopGraph);
       hopStats.textContent = data.hopGraph
         ? `${data.hopGraph.scannerCount} scanner(s) · ${data.hopGraph.nodeCount} nodes · max depth ${data.hopGraph.maxHopDepth}`
@@ -490,7 +610,30 @@
     }
 
     extractBtn.addEventListener("click", () => {
-      window.location.href = "/api/extract?format=zip";
+      const cipher = confirm("Use cipher exfil? OK = password-protected, Cancel = plain ZIP");
+      if (cipher) {
+        const pw = prompt("Exfil password:");
+        if (pw) window.location.href = "/api/extract?format=cipher&password=" + encodeURIComponent(pw);
+      } else {
+        window.location.href = "/api/extract?format=zip";
+      }
+    });
+
+    briefBtn.addEventListener("click", () => { window.open("/api/brief", "_blank"); });
+
+    voiceBtn.addEventListener("click", () => {
+      const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (!SR) { showToast("Voice not supported in this browser"); return; }
+      const rec = new SR();
+      rec.onresult = async (ev) => {
+        const cmd = (ev.results[0][0].transcript || "").toLowerCase();
+        if (cmd.includes("sync") || cmd.includes("hop")) { await stopScan(); showToast("Hop sync"); }
+        else if (cmd.includes("brief")) { window.open("/api/brief", "_blank"); }
+        else if (cmd.includes("status")) { await poll(); showToast(statusEl.textContent); }
+        else showToast("Heard: " + cmd);
+      };
+      rec.start();
+      showToast("Voice commander listening…");
     });
 
     locBtn.addEventListener("click", () => {
@@ -530,6 +673,7 @@
 
     initBattlefield();
     loadScenarios();
+    loadTheories();
     bootSweep();
     connectSSE();
   </script>

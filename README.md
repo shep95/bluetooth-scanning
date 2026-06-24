@@ -152,8 +152,13 @@ Open **http://127.0.0.1:8765** — sweep **auto-starts** and runs forever (no de
 For multi-hop chains, run a companion in a loop:
 
 ```bash
+# Phone / second PC as hop bridge
 python hop_reporter.py --loop --node-id pixel-hop --label "Pixel 9" \
   --self-address C0:1C:6A:A4:93:C6 --server http://YOUR_PC_IP:8765
+
+# Fixed listening post (dead drop)
+python hop_reporter.py --loop --listening-post --node-id post-1 --label "Listening Post A" \
+  --server http://YOUR_PC_IP:8765
 ```
 
 ---
@@ -203,6 +208,36 @@ flowchart TB
 | Download mission intel | Scattered UI state | **EXFIL PACKAGE** zip: devices, dossiers, chrono, hop graph |
 | Command center wall display | Polling is choppy | **SSE war room stream** at `/api/events/stream` |
 
+### Extended sci-fi theories (`ble_sci_fi.py`)
+
+| Theory | Flaw | Fix in code |
+|:---|:---|:---|
+| Emitter cloning | Random MACs | `cloneClusters` via fingerprint history |
+| Spoof / mimic | Generic names | `spoofAlerts` when watchlist name ≠ signature |
+| Resurrection | Idle devices vanish | `SIGNAL LOST` / `RESURRECTED` chrono |
+| Beacon dialect | No standard payload | `dialect` tags from UUID rules |
+| Vector pursuit | RSSI noise | `pursuit.bearing` + confidence |
+| Containment geofence | No target GPS | RSSI perimeter breach on scanner zone |
+| Shadow tracking | Needs hop nodes | `shadowPath` across domino graph |
+| Echo ranging | BLE ≠ sonar | Multi-node RSSI delta trend |
+| Mesh quorum | One radio lies | `CONFIRMED` when ≥2 scanners agree |
+| Scanner custody | No target GPS | `custodyChains` handoff log |
+| Dead drop posts | Need hardware | `hop_reporter.py --listening-post --loop` |
+| Mission replay | Live view fleeting | `replayFrames` buffer + HUD scrubber |
+| Protocol fingerprint | Limited passive data | `protocol` profile from adv bytes |
+| Co-occurrence cohorts | Co-location ≠ bond | `cohortClusters` matrix |
+| Battery oracle | Battery often hidden | GATT level or adv cadence inference |
+| Cipher exfil | Plain ZIP leaks | `/api/extract?format=cipher&password=` |
+| Tomography grid | Not X-ray | Multi-scanner RSSI heat map |
+| Device mind reading | Can't read thoughts | `mind.capabilities` from GATT/UUIDs |
+| Worm spread | Strangers won't relay | `wormTimeline` hop depth over time |
+| Temporal anomaly | Graph reorders | Impossible hop depth jump flag |
+| Mission brief | JSON unreadable | `GET /api/brief` auto after-action report |
+| Threat board | Too many contacts | Rotating priority board in HUD |
+| Voice commander | — | Web Speech: "sync hops", "status", "brief" |
+| Red/blue team | — | Ally=blue, unknown=red, target=purple |
+| Quantum decoherence | — | UI glitch when interference = critical |
+
 ### Mission phases (UI labels)
 
 | Phase | HUD label | Meaning |
@@ -232,6 +267,10 @@ flowchart TB
 | `GET` | `/api/chrono` | Chrono blackbox events |
 | `GET` | `/api/dossier?address=` | Full intel card for one device |
 | `GET` | `/api/extract?format=zip` | Download mission exfil package |
+| `GET` | `/api/extract?format=cipher&password=` | Password-scrambled exfil ZIP |
+| `GET` | `/api/brief` | Plain-text mission after-action brief |
+| `GET` | `/api/replay` | Time-dilated replay frame buffer |
+| `GET` | `/api/theories` | Full narrative → flaw → fix catalog |
 | `GET` | `/api/events/stream` | SSE war room event stream |
 | `POST` | `/api/scenario` | Set mission preset `{ "scenario": "perimeter" }` |
 | `POST` | `/api/watchlist` | Target lock `{ "address": "...", "action": "toggle" }` |
@@ -301,6 +340,7 @@ bluetooth-scanning/
 ├── ble-scan-server.py      # HTTP server + scan orchestration
 ├── tactical_hud.html       # #houseofasher tactical HUD (loaded at runtime)
 ├── ble_tactical.py         # Chrono, fingerprints, trails, scenarios, exfil
+├── ble_sci_fi.py           # Extended theory engine (21+ narrative→fix modules)
 ├── ble_hop_graph.py        # Cooperative domino hop graph + relay scores
 ├── hop_reporter.py         # Companion scanner CLI (hop node)
 ├── ble_device_naming.py    # Multi-source name resolution

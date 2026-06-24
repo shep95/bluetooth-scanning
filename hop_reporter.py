@@ -39,12 +39,13 @@ async def scan_once(duration: float) -> list[dict]:
     return list(seen.values())
 
 
-def post_report(server: str, node_id: str, label: str, self_address: str | None, observations: list[dict]) -> dict:
+def post_report(server: str, node_id: str, label: str, self_address: str | None, observations: list[dict], listening_post: bool = False) -> dict:
     payload = {
         "nodeId": node_id,
         "nodeLabel": label,
         "selfAddress": self_address,
         "observations": observations,
+        "listeningPost": listening_post,
     }
     body = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
@@ -64,13 +65,15 @@ async def run_loop(
     self_address: str | None,
     duration: float,
     interval: float,
+    listening_post: bool,
 ) -> None:
-    print(f"Continuous hop node '{label}' → {server} (scan {duration}s, repeat every {interval}s)")
+    tag = "LISTENING POST" if listening_post else "hop node"
+    print(f"Continuous {tag} '{label}' → {server} (scan {duration}s, repeat every {interval}s)")
     while True:
         observations = await scan_once(duration)
         depth = 0
         try:
-            result = post_report(server, node_id, label, self_address, observations)
+            result = post_report(server, node_id, label, self_address, observations, listening_post)
             depth = result.get("hopGraph", {}).get("maxHopDepth", 0)
             print(
                 f"[{time.strftime('%H:%M:%S')}] reported {len(observations)} contact(s) · "
@@ -90,12 +93,13 @@ async def main() -> int:
     parser.add_argument("--duration", type=float, default=12.0, help="Seconds to scan each cycle")
     parser.add_argument("--interval", type=float, default=15.0, help="Seconds between hop reports (loop mode)")
     parser.add_argument("--loop", action="store_true", help="Never stop — continuous domino hop reporting")
+    parser.add_argument("--listening-post", action="store_true", help="Register as fixed LISTENING POST dead-drop node")
     args = parser.parse_args()
 
     label = args.label or args.node_id
 
     if args.loop:
-        await run_loop(args.server, args.node_id, label, args.self_address, args.duration, args.interval)
+        await run_loop(args.server, args.node_id, label, args.self_address, args.duration, args.interval, args.listening_post)
         return 0
 
     print(f"Scanning {args.duration}s as hop node '{label}'...")
@@ -103,7 +107,7 @@ async def main() -> int:
     print(f"Seen {len(observations)} device(s), posting to {args.server}...")
 
     try:
-        result = post_report(args.server, args.node_id, label, args.self_address, observations)
+        result = post_report(args.server, args.node_id, label, args.self_address, observations, args.listening_post)
         print(json.dumps(result, indent=2))
         return 0
     except urllib.error.URLError as exc:
