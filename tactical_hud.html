@@ -1,0 +1,500 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>houseofasher · Tactical BLE HUD</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <style>
+    :root {
+      --bg: #0a0e14; --panel: #121820; --border: #1e2a3a;
+      --cyan: #00e5ff; --green: #39ff14; --amber: #ffb020; --red: #ff3355;
+      --text: #c8d6e5; --muted: #6b7c93;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; font-family: "Segoe UI", system-ui, sans-serif;
+      background: var(--bg); color: var(--text);
+      min-height: 100vh;
+    }
+    .topbar {
+      display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem;
+      padding: 0.75rem 1rem; border-bottom: 1px solid var(--border);
+      background: linear-gradient(180deg, #0f1520, var(--bg));
+    }
+    .brand { font-weight: 700; letter-spacing: 0.08em; color: var(--cyan); }
+    .brand span { color: var(--muted); font-weight: 400; font-size: 0.75rem; }
+    .phase { font-size: 0.85rem; color: var(--green); font-weight: 600; }
+    .ticker {
+      flex: 1; min-width: 200px; font-size: 0.8rem; color: var(--amber);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .interference { font-size: 0.75rem; padding: 0.2rem 0.5rem; border-radius: 4px; border: 1px solid var(--border); }
+    .interference.clear { color: var(--green); }
+    .interference.elevated { color: var(--amber); }
+    .interference.critical { color: var(--red); animation: pulse 1s infinite; }
+    @keyframes pulse { 50% { opacity: 0.6; } }
+    .layout { display: grid; grid-template-columns: 1fr 320px; gap: 0; min-height: calc(100vh - 56px); }
+    @media (max-width: 900px) { .layout { grid-template-columns: 1fr; } }
+    main { padding: 1rem; overflow: auto; }
+    aside {
+      border-left: 1px solid var(--border); background: var(--panel);
+      padding: 0.75rem; overflow: auto; max-height: calc(100vh - 56px);
+    }
+    .panel {
+      border: 1px solid var(--border); border-radius: 8px;
+      padding: 0.75rem; margin-bottom: 1rem; background: #0d1219;
+    }
+    .panel h2 { margin: 0 0 0.5rem; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--cyan); }
+    .row { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.75rem; }
+    button, select {
+      background: #1a2433; color: var(--text); border: 1px solid var(--border);
+      padding: 0.45rem 0.85rem; border-radius: 6px; cursor: pointer; font-size: 0.85rem;
+    }
+    button:hover:not(:disabled) { border-color: var(--cyan); }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+    button.primary { border-color: var(--cyan); color: var(--cyan); }
+    button.danger { border-color: var(--red); color: var(--red); }
+    #health { font-size: 0.8rem; padding: 0.4rem 0.6rem; border-radius: 4px; margin-bottom: 0.75rem; }
+    #health.ok { background: #0d2818; color: var(--green); border: 1px solid #1a4a2a; }
+    #health.bad { background: #2a1018; color: var(--red); border: 1px solid #4a1a2a; }
+    #battlefield { width: 100%; height: 220px; border-radius: 6px; background: #050810; }
+    #chrono { list-style: none; padding: 0; margin: 0; font-size: 0.72rem; max-height: 280px; overflow-y: auto; }
+    #chrono li { padding: 0.35rem 0; border-bottom: 1px solid var(--border); color: var(--muted); }
+    #chrono li strong { color: var(--text); }
+    #alerts { font-size: 0.75rem; }
+    .alert-item { padding: 0.35rem; margin-bottom: 0.35rem; border-left: 3px solid var(--red); background: #1a1018; }
+    #list { list-style: none; padding: 0; margin: 0; }
+    .device {
+      border: 1px solid var(--border); border-radius: 8px; padding: 0.65rem 0.75rem;
+      margin-bottom: 0.5rem; position: relative;
+    }
+    .device.priority { border-color: var(--red); box-shadow: 0 0 12px #ff335522; }
+    .device .ring {
+      position: absolute; right: 0.75rem; top: 0.75rem;
+      width: 48px; height: 48px; border-radius: 50%;
+      border: 2px solid var(--cyan); opacity: 0.35;
+      animation: ring 2s ease-out infinite;
+    }
+    @keyframes ring { 0% { transform: scale(0.8); opacity: 0.5; } 100% { transform: scale(1.4); opacity: 0; } }
+    .tier { font-size: 0.65rem; text-transform: uppercase; padding: 0.1rem 0.35rem; border-radius: 3px; margin-left: 0.35rem; }
+    .tier.friendly { background: #0d2818; color: var(--green); }
+    .tier.known { background: #0d2030; color: var(--cyan); }
+    .tier.unknown { background: #2a2010; color: var(--amber); }
+    .tier.priority { background: #2a1018; color: var(--red); }
+    .tier.breach { background: #301020; color: #ff6699; }
+    .meta { font-size: 0.75rem; color: var(--muted); display: block; margin-top: 0.2rem; }
+    .dossier { display: none; margin-top: 0.5rem; padding: 0.5rem; background: #080c12; border-radius: 4px; font-size: 0.72rem; }
+    .device.open .dossier { display: block; }
+    .breach-chain { font-size: 0.78rem; padding: 0.35rem 0; border-bottom: 1px solid var(--border); }
+    .relay-row { display: flex; justify-content: space-between; font-size: 0.75rem; padding: 0.25rem 0; }
+    .toast {
+      position: fixed; bottom: 1rem; right: 1rem; max-width: 320px;
+      background: #1a1018; border: 1px solid var(--red); padding: 0.75rem;
+      border-radius: 8px; font-size: 0.8rem; z-index: 100; display: none;
+    }
+    .toast.show { display: block; animation: slideIn 0.3s; }
+    @keyframes slideIn { from { transform: translateY(20px); opacity: 0; } }
+    .legend { font-size: 0.72rem; color: var(--muted); }
+    code { color: var(--cyan); font-size: 0.85em; }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">#houseofasher <span>TACTICAL BLE</span></div>
+    <div class="phase" id="missionPhase">STANDBY</div>
+    <div class="ticker" id="ticker">AWAITING ORDERS</div>
+    <div class="interference clear" id="interference">SPECTRUM CLEAR</div>
+  </header>
+
+  <div class="layout">
+    <main>
+      <div id="health">Checking Bluetooth…</div>
+      <div class="panel">
+        <h2>Mission control</h2>
+        <div class="row">
+          <select id="scenario"></select>
+          <button id="startBtn" class="primary" disabled>SWEEP</button>
+          <button id="stopBtn" class="danger" disabled>ABORT</button>
+          <button id="extractBtn" type="button">EXFIL PACKAGE</button>
+          <label class="legend"><input type="checkbox" id="audioToggle" checked /> Sonar audio</label>
+        </div>
+        <div id="status" class="meta">Idle.</div>
+        <div id="location" class="meta" style="margin-top:0.5rem;">
+          Location not set — <button id="locBtn" type="button">Share scanner GPS</button>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>3D hop battlefield</h2>
+        <div id="battlefield"></div>
+        <div id="hopStats" class="meta" style="margin-top:0.5rem;"></div>
+        <div id="breachChains"></div>
+      </div>
+
+      <div class="panel">
+        <h2>Signal contacts</h2>
+        <ul id="list"><li class="meta">No devices yet.</li></ul>
+      </div>
+    </main>
+
+    <aside>
+      <div class="panel">
+        <h2>Chrono blackbox</h2>
+        <ul id="chrono"></ul>
+      </div>
+      <div class="panel">
+        <h2>Proximity alerts</h2>
+        <div id="alerts" class="meta">No alerts.</div>
+      </div>
+      <div class="panel">
+        <h2>Relay net scores</h2>
+        <div id="relayScores"></div>
+      </div>
+      <div class="panel">
+        <h2>War room stream</h2>
+        <div id="sseStatus" class="meta">Connecting SSE…</div>
+      </div>
+    </aside>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <script>
+    let pollTimer = null;
+    let lastCount = 0;
+    let audioCtx = null;
+    let scene, camera, renderer, nodeMeshes = {};
+
+    const healthEl = document.getElementById("health");
+    const statusEl = document.getElementById("status");
+    const listEl = document.getElementById("list");
+    const startBtn = document.getElementById("startBtn");
+    const stopBtn = document.getElementById("stopBtn");
+    const locBtn = document.getElementById("locBtn");
+    const locEl = document.getElementById("location");
+    const scenarioEl = document.getElementById("scenario");
+    const missionPhaseEl = document.getElementById("missionPhase");
+    const tickerEl = document.getElementById("ticker");
+    const interferenceEl = document.getElementById("interference");
+    const chronoEl = document.getElementById("chrono");
+    const alertsEl = document.getElementById("alerts");
+    const relayEl = document.getElementById("relayScores");
+    const hopStats = document.getElementById("hopStats");
+    const breachChains = document.getElementById("breachChains");
+    const toast = document.getElementById("toast");
+    const audioToggle = document.getElementById("audioToggle");
+    const extractBtn = document.getElementById("extractBtn");
+    const sseStatus = document.getElementById("sseStatus");
+
+    const TIER_LABELS = { friendly: "ALLY", known: "KNOWN", unknown: "UNKNOWN", priority: "TARGET LOCK", breach: "DEEP BREACH" };
+    const TREND_LABELS = { approaching: "↗ APPROACHING", receding: "↘ RECEDING", static: "● HOLDING", unknown: "?" };
+
+    function escapeHtml(s) {
+      return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+    }
+
+    function playBlip(freq = 440, dur = 0.08) {
+      if (!audioToggle.checked) return;
+      try {
+        if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        const o = audioCtx.createOscillator();
+        const g = audioCtx.createGain();
+        o.frequency.value = freq;
+        g.gain.value = 0.06;
+        o.connect(g); g.connect(audioCtx.destination);
+        o.start(); o.stop(audioCtx.currentTime + dur);
+      } catch (_) {}
+    }
+
+    function showToast(msg) {
+      toast.textContent = msg;
+      toast.classList.add("show");
+      setTimeout(() => toast.classList.remove("show"), 4000);
+      playBlip(880, 0.15);
+    }
+
+    function initBattlefield() {
+      const el = document.getElementById("battlefield");
+      scene = new THREE.Scene();
+      camera = new THREE.PerspectiveCamera(50, el.clientWidth / el.clientHeight, 0.1, 100);
+      camera.position.set(0, 8, 12);
+      camera.lookAt(0, 0, 0);
+      renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+      renderer.setSize(el.clientWidth, el.clientHeight);
+      renderer.setClearColor(0x050810);
+      el.appendChild(renderer.domElement);
+      const light = new THREE.DirectionalLight(0x00e5ff, 0.8);
+      light.position.set(5, 10, 5);
+      scene.add(light);
+      scene.add(new THREE.AmbientLight(0x223344, 0.6));
+      const rootGeo = new THREE.SphereGeometry(0.5, 16, 16);
+      const rootMat = new THREE.MeshBasicMaterial({ color: 0x39ff14 });
+      const root = new THREE.Mesh(rootGeo, rootMat);
+      root.position.set(0, 0, 0);
+      scene.add(root);
+      nodeMeshes["pc-root"] = root;
+      function animate() {
+        requestAnimationFrame(animate);
+        Object.values(nodeMeshes).forEach((m, i) => { if (i > 0) m.rotation.y += 0.01; });
+        renderer.render(scene, camera);
+      }
+      animate();
+    }
+
+    function updateBattlefield(hop) {
+      if (!scene || !hop) return;
+      const nodes = hop.nodes || [];
+      const n = nodes.length || 1;
+      nodes.forEach((node, i) => {
+        const id = node.id;
+        if (id === "pc-root") return;
+        const angle = (i / n) * Math.PI * 2;
+        const r = 3 + (node.hopDepth || 1) * 1.2;
+        const x = Math.cos(angle) * r;
+        const z = Math.sin(angle) * r;
+        if (!nodeMeshes[id]) {
+          const geo = new THREE.SphereGeometry(0.35, 12, 12);
+          const col = node.kind === "scanner" ? 0x00e5ff : node.kind === "bridge" ? 0xffb020 : 0x8899aa;
+          const mesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: col }));
+          scene.add(mesh);
+          nodeMeshes[id] = mesh;
+        }
+        nodeMeshes[id].position.set(x, 0, z);
+      });
+      (hop.edges || []).slice(0, 30).forEach((e, i) => {
+        const a = nodeMeshes[e.from];
+        const b = nodeMeshes[e.to];
+        if (a && b && i < 15) {
+          const pts = [a.position.clone(), b.position.clone()];
+          const line = new THREE.Line(
+            new THREE.BufferGeometry().setFromPoints(pts),
+            new THREE.LineBasicMaterial({ color: 0x1e3a5f, transparent: true, opacity: 0.5 })
+          );
+          scene.add(line);
+        }
+      });
+    }
+
+    async function loadScenarios() {
+      const res = await fetch("/api/scenario");
+      const data = await res.json();
+      scenarioEl.innerHTML = (data.scenarios || []).map((s) =>
+        `<option value="${escapeHtml(s.id)}" ${s.id === data.active ? "selected" : ""}>${escapeHtml(s.label)}</option>`
+      ).join("");
+    }
+
+    scenarioEl.addEventListener("change", async () => {
+      await fetch("/api/scenario", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ scenario: scenarioEl.value }),
+      });
+    });
+
+    function renderTactical(tac) {
+      if (!tac) return;
+      missionPhaseEl.textContent = tac.missionLabel || "STANDBY";
+      tickerEl.textContent = tac.ticker || "";
+      const intf = tac.interference || {};
+      interferenceEl.textContent = intf.label || "SPECTRUM CLEAR";
+      interferenceEl.className = "interference " + (intf.level || "clear");
+
+      chronoEl.innerHTML = (tac.chrono || []).slice().reverse().map((e) =>
+        `<li><strong>${escapeHtml(e.type)}</strong> ${escapeHtml(e.message)}</li>`
+      ).join("") || "<li>No events yet.</li>";
+
+      const alerts = tac.alerts || [];
+      alertsEl.innerHTML = alerts.length
+        ? alerts.slice().reverse().map((a) => `<div class="alert-item">${escapeHtml(a.message)}</div>`).join("")
+        : "No alerts.";
+
+      relayEl.innerHTML = (tac.relayScores || []).map((r) =>
+        `<div class="relay-row"><span>${escapeHtml(r.label)}</span><span>${r.score} pts · ${r.contacts} contacts · ${r.bridges} bridges</span></div>`
+      ).join("") || "<div class='meta'>No relay nodes.</div>";
+
+      breachChains.innerHTML = (tac.dominoBreaches || []).slice(0, 5).map((c) =>
+        `<div class="breach-chain"><strong>${escapeHtml(c.breachLabel || c.target)}</strong><br>${(c.path || []).map(escapeHtml).join(" → ")}</div>`
+      ).join("");
+    }
+
+    function renderDevices(devices) {
+      if (!devices.length) {
+        listEl.innerHTML = "<li class='meta'>No signal contacts.</li>";
+        return;
+      }
+      listEl.innerHTML = devices.map((d) => {
+        const tier = d.threatTier || "unknown";
+        const pri = d.onWatchlist ? " priority" : "";
+        const ring = d.proximityZone === "immediate" ? '<div class="ring"></div>' : "";
+        const trend = TREND_LABELS[d.movementTrend] || "";
+        const fp = d.fingerprint ? `<span class="meta">Signature: <code>${escapeHtml(d.fingerprint)}</code></span>` : "";
+        const watchBtn = `<button type="button" class="watchBtn" data-id="${escapeHtml(d.id)}">${d.onWatchlist ? "★ LOCKED" : "☆ LOCK"}</button>`;
+        const dossierId = "dossier-" + escapeHtml(d.id).replace(/:/g, "");
+        return `<li class="device${pri}" data-id="${escapeHtml(d.id)}">
+          ${ring}
+          <strong>${escapeHtml(d.displayName || d.name || "Unknown")}
+            <span class="tier ${escapeHtml(tier)}">${TIER_LABELS[tier] || tier}</span>
+          </strong>
+          <span class="meta">~${escapeHtml(d.distanceLabel || "?")} · RSSI ${d.rssi ?? "?"} dBm · ${trend}</span>
+          <span class="meta">MAC <code>${escapeHtml(d.macAddress || d.id)}</code></span>
+          ${fp}
+          ${watchBtn}
+          <button type="button" class="dossierBtn" data-target="${dossierId}">INTEL DOSSIER</button>
+          <div class="dossier" id="${dossierId}">Loading…</div>
+        </li>`;
+      }).join("");
+
+      document.querySelectorAll(".watchBtn").forEach((btn) => {
+        btn.addEventListener("click", async (e) => {
+          e.stopPropagation();
+          await fetch("/api/watchlist", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ address: btn.dataset.id, action: "toggle" }),
+          });
+          await poll();
+        });
+      });
+      document.querySelectorAll(".dossierBtn").forEach((btn) => {
+        btn.addEventListener("click", async (e) => {
+          e.stopPropagation();
+          const li = btn.closest(".device");
+          const id = li.dataset.id;
+          const box = document.getElementById(btn.dataset.target);
+          if (li.classList.toggle("open") && box.textContent === "Loading…") {
+            const res = await fetch("/api/dossier?address=" + encodeURIComponent(id));
+            const dossier = await res.json();
+            box.innerHTML = `<pre style="white-space:pre-wrap;margin:0;">${escapeHtml(JSON.stringify(dossier, null, 2))}</pre>`;
+          }
+        });
+      });
+    }
+
+    function applySnapshot(data) {
+      const tac = data.tactical;
+      renderTactical(tac);
+      renderDevices(data.devices ?? []);
+      updateBattlefield(data.hopGraph);
+      hopStats.textContent = data.hopGraph
+        ? `${data.hopGraph.scannerCount} scanner(s) · ${data.hopGraph.nodeCount} nodes · max depth ${data.hopGraph.maxHopDepth}`
+        : "";
+
+      const count = data.count || 0;
+      if (count > lastCount && data.phase === "running") {
+        playBlip(300 + Math.min(count * 20, 400), 0.05);
+      }
+      lastCount = count;
+
+      if (tac?.alerts?.length) {
+        const latest = tac.alerts[tac.alerts.length - 1];
+        if (latest && Date.now() / 1000 - latest.ts < 3) showToast(latest.message);
+      }
+
+      if (data.scannerLocation?.addressShort) {
+        locEl.innerHTML = `<strong>Scanner position:</strong> ${escapeHtml(data.scannerLocation.addressShort)}`;
+      }
+
+      const phaseLabels = { running: "SWEEP", resolving: "DECRYPT", pulling: "EXFIL", completed: "COMPLETE", failed: "LOST" };
+      if (data.phase === "running") {
+        const elapsed = data.startedAt ? Math.floor(Date.now() / 1000 - data.startedAt) : 0;
+        statusEl.textContent = `SWEEP active · ${count} contact(s) · ${elapsed}s — ABORT when ready`;
+        startBtn.disabled = true; stopBtn.disabled = false;
+        return;
+      }
+      if (data.phase === "resolving" || data.phase === "pulling") {
+        statusEl.textContent = `${phaseLabels[data.phase] || data.phase}… ${count} device(s)`;
+        startBtn.disabled = true; stopBtn.disabled = false;
+        return;
+      }
+      if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+      startBtn.disabled = false; stopBtn.disabled = true;
+      statusEl.textContent = data.phase === "failed"
+        ? (data.error || "Signal lost.")
+        : (count ? `MISSION COMPLETE · ${count} contact(s)` : "Sweep complete · 0 contacts");
+    }
+
+    async function poll() {
+      const res = await fetch("/api/devices");
+      applySnapshot(await res.json());
+    }
+
+    async function refreshHealth() {
+      try {
+        const res = await fetch("/api/health");
+        const data = await res.json();
+        healthEl.className = data.ready ? "ok" : "bad";
+        healthEl.textContent = data.ready ? "● RADIO ONLINE" : "✕ " + data.message;
+        startBtn.disabled = !data.ready || pollTimer !== null;
+        return data.ready;
+      } catch {
+        healthEl.className = "bad";
+        healthEl.textContent = "Server offline — run: python ble-scan-server.py";
+        startBtn.disabled = true;
+        return false;
+      }
+    }
+
+    async function startScan() {
+      statusEl.textContent = "Initiating sweep…";
+      const res = await fetch("/api/scan", { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) { statusEl.textContent = data.error || "Sweep failed."; await refreshHealth(); return; }
+      playBlip(220, 0.2);
+      stopBtn.disabled = false;
+      pollTimer = setInterval(poll, 400);
+      poll();
+    }
+
+    async function stopScan() {
+      await fetch("/api/stop", { method: "POST" }).catch(() => {});
+      playBlip(180, 0.25);
+      await poll();
+    }
+
+    extractBtn.addEventListener("click", () => {
+      window.location.href = "/api/extract?format=zip";
+    });
+
+    locBtn.addEventListener("click", () => {
+      if (!navigator.geolocation) { locEl.textContent = "Geolocation unavailable."; return; }
+      navigator.geolocation.getCurrentPosition(async (pos) => {
+        await fetch("/api/location", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            latitude: pos.coords.latitude,
+            longitude: pos.coords.longitude,
+            accuracyMeters: pos.coords.accuracy,
+          }),
+        });
+        await poll();
+      });
+    });
+
+    startBtn.addEventListener("click", startScan);
+    stopBtn.addEventListener("click", stopScan);
+
+    function connectSSE() {
+      const es = new EventSource("/api/events/stream");
+      es.onopen = () => { sseStatus.textContent = "● War room link ACTIVE"; };
+      es.onmessage = (ev) => {
+        try {
+          const e = JSON.parse(ev.data);
+          tickerEl.textContent = e.message;
+        } catch (_) {}
+      };
+      es.onerror = () => {
+        sseStatus.textContent = "Stream reconnecting…";
+        es.close();
+        setTimeout(connectSSE, 3000);
+      };
+    }
+
+    initBattlefield();
+    loadScenarios();
+    refreshHealth();
+    connectSSE();
+  </script>
+</body>
+</html>

@@ -9,8 +9,9 @@ import threading
 import time
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any, Literal
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from bleak import BleakScanner
 from bleak.backends.device import BLEDevice
@@ -28,6 +29,7 @@ from ble_gatt_pull import pull_device_data_sync, pull_devices_sequential
 from ble_hop_graph import HOP_GRAPH
 from ble_location import SCANNER_LOCATION, reverse_geocode
 from ble_paired_windows import load_all_paired_names
+from ble_tactical import SCENARIOS, TACTICAL, mission_label
 
 PORT = 8765
 DISCOVER_ON_STOP_SEC = 3.0
@@ -71,22 +73,26 @@ class ScanState:
 
     def snapshot(self) -> dict[str, Any]:
         with self.lock:
-            device_list = sorted(
-                self.devices.values(),
-                key=lambda d: d.get("rssi") if d.get("rssi") is not None else -999,
-                reverse=True,
-            )
             hop_graph = HOP_GRAPH.snapshot()
             depth_map = {
                 normalize_mac(n["address"]): n.get("hopDepth")
                 for n in hop_graph.get("nodes", [])
                 if n.get("address")
             }
-            for d in device_list:
+            device_list = []
+            for d in self.devices.values():
                 mac = normalize_mac(d.get("macAddress") or d.get("id", ""))
                 d["hopDepth"] = depth_map.get(mac)
+                device_list.append(d)
+            device_list.sort(
+                key=lambda d: d.get("rssi") if d.get("rssi") is not None else -999,
+                reverse=True,
+            )
+            TACTICAL.on_scan_tick(len(device_list))
+            tactical = TACTICAL.snapshot(self.phase, hop_graph)
             return {
                 "phase": self.phase,
+                "missionLabel": mission_label(self.phase),
                 "running": self.phase in ("running", "resolving", "pulling"),
                 "error": self.error,
                 "devices": device_list,
@@ -100,6 +106,7 @@ class ScanState:
                 "finishedAt": self.finished_at,
                 "zeroResultHint": ZERO_RESULT_HINT if self.phase == "completed" and not device_list else None,
                 "hopGraph": hop_graph,
+                "tactical": tactical,
             }
 
     def begin(self) -> None:
@@ -113,14 +120,18 @@ class ScanState:
             self.stop_flag.clear()
             self.started_at = time.time()
             self.finished_at = None
+        TACTICAL.reset_mission()
+        TACTICAL.on_phase_change("running")
 
     def begin_resolve(self) -> None:
         with self.lock:
             self.phase = "resolving"
+        TACTICAL.on_phase_change("resolving")
 
     def begin_pull(self) -> None:
         with self.lock:
             self.phase = "pulling"
+        TACTICAL.on_phase_change("pulling")
 
     def finish(self) -> None:
         device_list: list[dict[str, Any]] = []
@@ -129,8 +140,10 @@ class ScanState:
             self.finished_at = time.time()
             if self.phase == "completed":
                 device_list = list(self.devices.values())
+        TACTICAL.on_phase_change(self.phase)
         if device_list:
             HOP_GRAPH.ingest_pc_scan(device_list)
+            TACTICAL.log("mission", f"MISSION COMPLETE · {len(device_list)} contacts catalogued")
 
     def fail(self, message: str) -> None:
         with self.lock:
@@ -144,28 +157,55 @@ class ScanState:
         advertisement_data: AdvertisementData,
         source: str,
     ) -> None:
+        hop_graph = HOP_GRAPH.snapshot()
+        depth_map = {
+            normalize_mac(n["address"]): n.get("hopDepth")
+            for n in hop_graph.get("nodes", [])
+            if n.get("address")
+        }
         with self.lock:
             key = format_mac(device.address)
             existing = self.signals.get(key)
+            old_name = self.devices.get(key, {}).get("displayName") if key in self.devices else None
             if existing is None:
                 existing = DeviceSignals(address=device.address)
                 self.signals[key] = existing
             existing.merge(device, advertisement_data, source)
             pulled = self.pulled_data.get(key)
-            record = build_device_record(existing, self.paired_names, SCANNER_LOCATION, pulled)
+            hop_depth = depth_map.get(normalize_mac(key))
+            record = build_device_record(
+                existing, self.paired_names, SCANNER_LOCATION, pulled, hop_depth, hop_graph
+            )
             record["lastSeen"] = int(time.time() * 1000)
             self.devices[key] = record
+            if old_name and old_name != record.get("displayName"):
+                TACTICAL.on_name_resolved(key, old_name, record["displayName"], record.get("nameSource", ""))
 
     def apply_resolved_records(self) -> None:
+        hop_graph = HOP_GRAPH.snapshot()
+        depth_map = {
+            normalize_mac(n["address"]): n.get("hopDepth")
+            for n in hop_graph.get("nodes", [])
+            if n.get("address")
+        }
         with self.lock:
             for key, signals in self.signals.items():
                 pulled = self.pulled_data.get(key)
-                record = build_device_record(signals, self.paired_names, SCANNER_LOCATION, pulled)
+                hop_depth = depth_map.get(normalize_mac(key))
+                record = build_device_record(
+                    signals, self.paired_names, SCANNER_LOCATION, pulled, hop_depth, hop_graph
+                )
                 record["lastSeen"] = int(time.time() * 1000)
                 self.devices[key] = record
 
     def set_pulled_data(self, address: str, payload: dict[str, Any]) -> None:
         key = format_mac(address)
+        hop_graph = HOP_GRAPH.snapshot()
+        depth_map = {
+            normalize_mac(n["address"]): n.get("hopDepth")
+            for n in hop_graph.get("nodes", [])
+            if n.get("address")
+        }
         with self.lock:
             self.pulled_data[key] = payload
             signals = self.signals.get(key)
@@ -175,9 +215,13 @@ class ScanState:
                     signals.os_name = str(data["osDeviceName"])
                     signals.gatt_name = signals.os_name
                 remember_paired_aliases(self.paired_names, key, payload)
-                record = build_device_record(signals, self.paired_names, SCANNER_LOCATION, payload)
+                hop_depth = depth_map.get(normalize_mac(key))
+                record = build_device_record(
+                    signals, self.paired_names, SCANNER_LOCATION, payload, hop_depth, hop_graph
+                )
                 record["lastSeen"] = int(time.time() * 1000)
                 self.devices[key] = record
+                TACTICAL.log("exfil", f"INTEL PULLED · {record.get('displayName', key)}", {"mac": key})
 
     def has_device(self, address: str) -> bool:
         key = format_mac(address)
@@ -218,6 +262,10 @@ async def merge_discover_results(timeout: float) -> None:
 
 
 async def resolve_and_pull_phase() -> None:
+    scenario = TACTICAL.current_scenario()
+    auto_pull_max = int(scenario.get("autoPullMax", AUTO_PULL_MAX))
+    gatt_on_stop = bool(scenario.get("gattOnStop", True))
+
     STATE.begin_resolve()
     with STATE.lock:
         signals_copy = dict(STATE.signals)
@@ -229,7 +277,13 @@ async def resolve_and_pull_phase() -> None:
         STATE.apply_resolved_records()
         return
 
-    # Pull data from strongest devices — sequential connect required on Windows.
+    if not gatt_on_stop or auto_pull_max <= 0:
+        with STATE.lock:
+            STATE.signals = signals_copy
+        STATE.apply_resolved_records()
+        TACTICAL.log("observe", "Silent observe — no GATT exfiltration")
+        return
+
     ranked = sorted(
         signals_copy.values(),
         key=lambda s: s.rssi if s.rssi is not None else -999,
@@ -239,7 +293,7 @@ async def resolve_and_pull_phase() -> None:
         s for s in ranked
         if resolve_name(s, paired).name_source in ("inferred", "address")
     ]
-    targets = unnamed[:AUTO_PULL_MAX] if unnamed else ranked[:AUTO_PULL_MAX]
+    targets = unnamed[:auto_pull_max] if unnamed else ranked[:auto_pull_max]
 
     if targets:
         STATE.begin_pull()
@@ -296,343 +350,8 @@ def run_scan_in_thread() -> None:
         loop.close()
 
 
-HTML = """<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>BLE Scan</title>
-  <style>
-    * { box-sizing: border-box; }
-    body { font-family: system-ui, sans-serif; max-width: 820px; margin: 2rem auto; padding: 0 1rem; }
-    h1 { font-size: 1.25rem; }
-    .row { display: flex; gap: 0.5rem; margin-bottom: 1rem; flex-wrap: wrap; }
-    button { padding: 0.5rem 1rem; cursor: pointer; }
-    button:disabled { opacity: 0.5; cursor: not-allowed; }
-    #status { color: #555; margin-bottom: 0.5rem; min-height: 1.25rem; }
-    #health { font-size: 0.85rem; margin-bottom: 0.75rem; padding: 0.5rem 0.75rem; border-radius: 6px; }
-    #health.ok { background: #eef9ee; color: #1a5c1a; }
-    #health.bad { background: #fff0f0; color: #8a1f1f; }
-    #hint { color: #666; font-size: 0.85rem; margin-bottom: 0.75rem; }
-    #list { list-style: none; padding: 0; margin: 0; }
-    #list li {
-      border: 1px solid #ddd; border-radius: 6px; padding: 0.6rem 0.75rem;
-      margin-bottom: 0.5rem; font-size: 0.9rem;
-    }
-    #list li strong { display: block; }
-    .badge {
-      display: inline-block; font-size: 0.7rem; font-weight: 600; text-transform: uppercase;
-      padding: 0.1rem 0.35rem; border-radius: 4px; margin-left: 0.35rem; vertical-align: middle;
-      background: #eee; color: #555;
-    }
-    .badge.broadcast { background: #e8f4e8; color: #1a5c1a; }
-    .badge.paired { background: #e8eef9; color: #1a3d8a; }
-    .badge.gatt { background: #f3e8f9; color: #5c1a8a; }
-    .badge.inferred { background: #fff6e6; color: #8a5a1a; }
-    .badge.immediate { background: #e8f4e8; color: #1a5c1a; }
-    .badge.near { background: #e8eef9; color: #1a3d8a; }
-    .badge.far { background: #f5f5f5; color: #666; }
-    .pull-box { margin-top: 0.5rem; padding: 0.5rem; background: #f8f9fa; border-radius: 4px; font-size: 0.78rem; }
-    .pull-box code { word-break: break-all; }
-    .legend { font-size: 0.82rem; color: #444; background: #f8f9fa; border: 1px solid #e5e5e5; border-radius: 6px; padding: 0.6rem 0.75rem; margin-bottom: 1rem; }
-    .legend dt { font-weight: 600; margin-top: 0.35rem; }
-    .legend dd { margin: 0.15rem 0 0 0; color: #666; }
-    .meta { color: #666; font-size: 0.8rem; display: block; }
-    .empty { color: #888; font-style: italic; }
-  </style>
-</head>
-<body>
-  <h1>Bluetooth LE scan</h1>
-  <div id="health">Checking Bluetooth…</div>
-  <div id="location" class="meta" style="margin-bottom:0.75rem;padding:0.5rem 0.75rem;border:1px solid #ddd;border-radius:6px;">
-    Location not set — <button id="locBtn" type="button">Share my location</button> (for home street address)
-  </div>
-  <div id="paired" class="meta" style="margin-bottom:0.75rem;"></div>
-  <dl class="legend">
-    <dt>Device name</dt>
-    <dd>Pulled automatically from the device when possible (Bluetooth name, model, or paired name).</dd>
-    <dt>RSSI (signal strength)</dt>
-    <dd>Measured in dBm. <strong>Closer to 0 = stronger.</strong> Example: -45 = very close, -80 = farther away. Walls and interference affect this.</dd>
-    <dt>Bluetooth MAC</dt>
-    <dd>A hardware ID like <code>AA:BB:CC:DD:EE:FF</code> — <strong>not</strong> a home street address. Street address comes from your shared location.</dd>
-  </dl>
-  <div class="row">
-    <button id="startBtn" disabled>Start scan</button>
-    <button id="stopBtn" disabled>Stop</button>
-  </div>
-  <div id="status">Idle.</div>
-  <div id="hint"></div>
-  <section id="hopSection" style="margin:1.25rem 0;padding:0.75rem;border:1px solid #ddd;border-radius:8px;">
-    <h2 style="font-size:1rem;margin:0 0 0.5rem;">Hop map (domino discovery)</h2>
-    <p class="meta" id="hopNote">Each scanner reports what it hears. When a heard device is also a hop scanner, the chain continues.</p>
-    <div id="hopStats" class="meta"></div>
-    <ul id="hopChains" style="padding-left:1.2rem;font-size:0.85rem;"></ul>
-    <pre id="hopMermaid" style="font-size:0.75rem;overflow:auto;background:#f8f9fa;padding:0.5rem;border-radius:4px;"></pre>
-  </section>
-  <ul id="list"><li class="empty">No devices yet.</li></ul>
-
-  <script>
-    let pollTimer = null;
-    const healthEl = document.getElementById("health");
-    const statusEl = document.getElementById("status");
-    const hintEl = document.getElementById("hint");
-    const listEl = document.getElementById("list");
-    const startBtn = document.getElementById("startBtn");
-    const stopBtn = document.getElementById("stopBtn");
-    const locEl = document.getElementById("location");
-    const locBtn = document.getElementById("locBtn");
-    const pairedEl = document.getElementById("paired");
-    const hopStats = document.getElementById("hopStats");
-    const hopChains = document.getElementById("hopChains");
-    const hopMermaid = document.getElementById("hopMermaid");
-
-    const SOURCE_LABELS = {
-      broadcast: "advertised",
-      paired: "paired",
-      gatt: "GATT name",
-      inferred: "inferred",
-      address: "address only",
-    };
-
-    const ZONE_LABELS = { immediate: "same room", near: "nearby", far: "far", unknown: "?" };
-    const PULL_LABELS = {
-      deviceName: "Device name",
-      batteryLevel: "Battery %",
-      manufacturerName: "Manufacturer",
-      modelNumber: "Model",
-      serialNumber: "Serial",
-      firmwareRevision: "Firmware",
-      hardwareRevision: "Hardware",
-    };
-
-    function escapeHtml(s) {
-      return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
-    }
-
-    function renderHopGraph(hop) {
-      if (!hop) return;
-      hopStats.textContent = `${hop.scannerCount} scanner(s), ${hop.nodeCount} node(s), max hop depth ${hop.maxHopDepth} — ${hop.note || ""}`;
-      if (!hop.chains?.length) {
-        hopChains.innerHTML = "<li>No multi-hop chains yet. Run hop_reporter.py on another device to extend the domino map.</li>";
-      } else {
-        hopChains.innerHTML = hop.chains.map((c) =>
-          `<li><strong>${escapeHtml(c.target)}</strong> — ${c.hopDepth} hop(s): ${c.path.map(escapeHtml).join(" → ")}</li>`
-        ).join("");
-      }
-      const lines = ["flowchart LR", "  root[This PC]"];
-      for (const s of hop.scanners || []) {
-        if (!s.isRoot) lines.push(`  ${s.nodeId.replace(/-/g,"_")}[${s.label}]`);
-      }
-      for (const e of (hop.edges || []).slice(0, 24)) {
-        const a = e.from.replace(/[^a-zA-Z0-9_]/g, "_");
-        const b = e.to.replace(/[^a-zA-Z0-9_]/g, "_");
-        lines.push(`  ${a} --> ${b}`);
-      }
-      hopMermaid.textContent = lines.join("\\n");
-    }
-
-    function render(devices) {
-      if (!devices.length) {
-        listEl.innerHTML = '<li class="empty">No devices yet.</li>';
-        return;
-      }
-      listEl.innerHTML = devices.map((d) => {
-        const src = d.nameSource || "address";
-        const badge = `<span class="badge ${escapeHtml(src)}">${escapeHtml(SOURCE_LABELS[src] || src)}</span>`;
-        const zone = d.proximityZone || "unknown";
-        const zoneBadge = `<span class="badge ${escapeHtml(zone)}">${escapeHtml(ZONE_LABELS[zone] || zone)}</span>`;
-        const dist = d.distanceLabel
-          ? `<span class="meta"><strong>~${escapeHtml(d.distanceLabel)} away</strong> ${zoneBadge}</span>
-             <span class="meta" title="${escapeHtml(d.rssiNote || "")}">RSSI: ${d.rssi ?? "?"} dBm — ${escapeHtml(d.rssiHuman || "signal unknown")}</span>`
-          : `<span class="meta">${escapeHtml(d.rssiHuman || "")}</span>`;
-        const street = d.location?.coLocated && d.location.estimatedAddressShort
-          ? `<span class="meta"><strong>Street address (your location):</strong> ${escapeHtml(d.location.estimatedAddressShort)}</span>`
-          : "";
-        const locNote = d.location?.contextNote
-          ? `<span class="meta">${escapeHtml(d.location.contextNote)}</span>` : "";
-        const mfg = d.manufacturer ? `<span class="meta">Manufacturer (advertised): ${escapeHtml(d.manufacturer)}</span>` : "";
-        let pull = "";
-        if (d.pulledData?.data && Object.keys(d.pulledData.data).length) {
-          pull = `<div class="pull-box"><strong>Data pulled to this PC:</strong><br>${Object.entries(d.pulledData.data).map(([k,v]) => {
-            const label = PULL_LABELS[k] || k;
-            const val = k === "batteryLevel" ? `${v}%` : v;
-            return `${escapeHtml(label)}: <code>${escapeHtml(val)}</code>`;
-          }).join("<br>")}</div>`;
-        } else if (d.pullStatus === "pending") {
-          pull = `<div class="pull-box">Waiting to connect and pull device data…</div>`;
-        } else if (d.pullStatus === "failed" && d.pulledData?.errors?.length) {
-          pull = `<div class="pull-box">Could not pull data: ${escapeHtml(d.pulledData.errors[0])} — device may not allow connections.</div>`;
-        } else if (d.pullStatus === "empty") {
-          pull = `<div class="pull-box">Connected but no readable data exposed by this device.</div>`;
-        }
-        const pullBtn = `<button type="button" class="pullBtn" data-id="${escapeHtml(d.id)}">Retry pull</button>`;
-        const hopBadge = d.hopDepth != null && d.hopDepth > 0
-          ? `<span class="badge near">${d.hopDepth} hop(s) from PC</span>` : "";
-        return `
-        <li>
-          <strong>${escapeHtml(d.displayName || d.name || "Unknown device")}${badge}${hopBadge}</strong>
-          ${dist}
-          ${street}
-          ${locNote}
-          ${mfg}
-          <span class="meta">Bluetooth MAC: <code>${escapeHtml(d.macAddress || d.id)}</code> — ${escapeHtml(d.macNote || "hardware ID, not street address")}</span>
-          ${d.uuids?.length ? `<span class="meta">Services: ${d.uuids.map(escapeHtml).join(", ")}</span>` : ""}
-          ${pull}
-          ${pullBtn}
-        </li>`;
-      }).join("");
-      document.querySelectorAll(".pullBtn").forEach((btn) => {
-        btn.addEventListener("click", () => pullData(btn.dataset.id));
-      });
-    }
-
-    async function shareLocation() {
-      if (!navigator.geolocation) {
-        locEl.textContent = "Geolocation not supported in this browser.";
-        return;
-      }
-      locEl.textContent = "Requesting location permission…";
-      navigator.geolocation.getCurrentPosition(async (pos) => {
-        const res = await fetch("/api/location", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            latitude: pos.coords.latitude,
-            longitude: pos.coords.longitude,
-            accuracyMeters: pos.coords.accuracy,
-          }),
-        });
-        const data = await res.json();
-        if (data.addressShort) {
-          locEl.innerHTML = `<strong>Your location:</strong> ${escapeHtml(data.addressShort)} <span class="meta">(used to estimate if nearby devices are at your home)</span>`;
-        } else {
-          locEl.textContent = data.message || "Location saved.";
-        }
-      }, (err) => {
-        locEl.textContent = `Location denied: ${err.message}`;
-      }, { enableHighAccuracy: true, timeout: 15000 });
-    }
-
-    async function pullData(address) {
-      statusEl.textContent = `Pulling GATT data from ${address}…`;
-      const res = await fetch("/api/pull", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ address }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        statusEl.textContent = data.error || "Pull failed.";
-        return;
-      }
-      statusEl.textContent = data.ok ? `Pulled data from ${address}` : `No readable data from ${address}`;
-      await poll();
-    }
-
-    async function refreshHealth() {
-      try {
-        const res = await fetch("/api/health");
-        const data = await res.json();
-        healthEl.className = data.ready ? "ok" : "bad";
-        healthEl.textContent = data.message;
-        startBtn.disabled = !data.ready || pollTimer !== null;
-        return data.ready;
-      } catch {
-        healthEl.className = "bad";
-        healthEl.textContent = "Scan server not reachable. Run: python ble-scan-server.py";
-        startBtn.disabled = true;
-        return false;
-      }
-    }
-
-    function applySnapshot(data) {
-      render(data.devices ?? []);
-      if (data.scannerLocation?.addressShort) {
-        locEl.innerHTML = `<strong>Your location:</strong> ${escapeHtml(data.scannerLocation.addressShort)}`;
-      }
-      if (data.pairedDevices?.length) {
-        pairedEl.innerHTML = `<strong>Paired on this PC:</strong> ${data.pairedDevices.map((p) => escapeHtml(p.name)).join(", ")} — names appear after connect phase if BLE uses a random MAC while scanning.`;
-      }
-      renderHopGraph(data.hopGraph);
-      hintEl.textContent = data.zeroResultHint ?? "";
-
-      if (data.phase === "running") {
-        const elapsed = data.startedAt ? Math.floor(Date.now() / 1000 - data.startedAt) : 0;
-        statusEl.textContent = `Scanning… ${data.count} device(s) seen (${elapsed}s — click Stop when done)`;
-        startBtn.disabled = true;
-        stopBtn.disabled = false;
-        return;
-      }
-      if (data.phase === "resolving") {
-        statusEl.textContent = `Resolving device names… ${data.count} device(s)`;
-        startBtn.disabled = true;
-        stopBtn.disabled = false;
-        return;
-      }
-      if (data.phase === "pulling") {
-        statusEl.textContent = `Connecting & pulling data from devices… ${data.count} found so far`;
-        startBtn.disabled = true;
-        stopBtn.disabled = false;
-        return;
-      }
-
-      if (pollTimer) {
-        clearInterval(pollTimer);
-        pollTimer = null;
-      }
-
-      startBtn.disabled = false;
-      stopBtn.disabled = true;
-
-      if (data.phase === "failed") {
-        statusEl.textContent = data.error || "Scan failed.";
-      } else if (data.phase === "completed") {
-        statusEl.textContent = data.count
-          ? `Done. ${data.count} device(s) found.`
-          : "Done. 0 devices found.";
-      }
-    }
-
-    async function poll() {
-      const res = await fetch("/api/devices");
-      const data = await res.json();
-      applySnapshot(data);
-    }
-
-    async function startScan() {
-      hintEl.textContent = "";
-      statusEl.textContent = "Starting scan…";
-      startBtn.disabled = true;
-
-      const res = await fetch("/api/scan", { method: "POST" });
-      const data = await res.json();
-      if (!res.ok) {
-        statusEl.textContent = data.error || "Could not start scan.";
-        await refreshHealth();
-        return;
-      }
-
-      statusEl.textContent = data.continuous
-        ? "Scanning continuously — click Stop when done"
-        : `Scanning up to ${data.duration}s…`;
-      stopBtn.disabled = false;
-      pollTimer = setInterval(poll, 400);
-      poll();
-    }
-
-    async function stopScan() {
-      await fetch("/api/stop", { method: "POST" }).catch(() => {});
-      await poll();
-    }
-
-    startBtn.addEventListener("click", startScan);
-    stopBtn.addEventListener("click", stopScan);
-    locBtn.addEventListener("click", shareLocation);
-    refreshHealth();
-  </script>
-</body>
-</html>
-"""
+_HTML_PATH = Path(__file__).with_name("tactical_hud.html")
+HTML = _HTML_PATH.read_text(encoding="utf-8") if _HTML_PATH.exists() else "<h1>tactical_hud.html missing</h1>"
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -681,6 +400,82 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/api/hop/graph":
             self._send_json(200, HOP_GRAPH.snapshot())
+            return
+
+        if path == "/api/tactical":
+            snap = STATE.snapshot()
+            self._send_json(200, snap.get("tactical", {}))
+            return
+
+        if path == "/api/chrono":
+            self._send_json(200, {"events": TACTICAL.snapshot(STATE.phase, HOP_GRAPH.snapshot()).get("chrono", [])})
+            return
+
+        if path == "/api/scenario":
+            self._send_json(200, {
+                "active": TACTICAL.scenario_id,
+                "scenarios": [{"id": k, **{kk: vv for kk, vv in v.items() if kk != "autoPullMax"}} for k, v in SCENARIOS.items()],
+            })
+            return
+
+        if path == "/api/dossier":
+            qs = parse_qs(urlparse(self.path).query)
+            address = (qs.get("address") or [""])[0]
+            if not address:
+                self._send_json(400, {"error": "address query param required"})
+                return
+            snap = STATE.snapshot()
+            device = next(
+                (d for d in snap["devices"] if format_mac(d.get("id", "")) == format_mac(address)),
+                None,
+            )
+            if not device:
+                self._send_json(404, {"error": "Device not found"})
+                return
+            self._send_json(200, TACTICAL.build_dossier(device, snap["hopGraph"]))
+            return
+
+        if path == "/api/extract":
+            qs = parse_qs(urlparse(self.path).query)
+            fmt = (qs.get("format") or ["json"])[0]
+            snap = STATE.snapshot()
+            package = TACTICAL.build_extraction_package(snap, snap["hopGraph"])
+            if fmt == "zip":
+                body = TACTICAL.build_extraction_zip(package)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/zip")
+                self.send_header("Content-Disposition", 'attachment; filename="houseofasher_intel.zip"')
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            self._send_json(200, package)
+            return
+
+        if path == "/api/events/stream":
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "keep-alive")
+            self.end_headers()
+            sub = TACTICAL.subscribe_sse()
+            try:
+                hello = json.dumps({"type": "link", "message": "WAR ROOM LINK ESTABLISHED"})
+                self.wfile.write(f"data: {hello}\n\n".encode())
+                self.wfile.flush()
+                while True:
+                    if len(sub) > 0:
+                        msg = sub.popleft()
+                        self.wfile.write(f"data: {msg}\n\n".encode())
+                        self.wfile.flush()
+                    else:
+                        time.sleep(0.5)
+                        self.wfile.write(b": keepalive\n\n")
+                        self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            finally:
+                TACTICAL.unsubscribe_sse(sub)
             return
 
         self.send_error(404)
@@ -741,6 +536,36 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(200, {"ok": True})
             return
 
+        if path == "/api/scenario":
+            payload = self._read_json()
+            scenario = payload.get("scenario", "standard")
+            try:
+                active = TACTICAL.set_scenario(str(scenario))
+                self._send_json(200, {"ok": True, "scenario": active})
+            except ValueError as exc:
+                self._send_json(400, {"error": str(exc)})
+            return
+
+        if path == "/api/watchlist":
+            payload = self._read_json()
+            address = payload.get("address")
+            if not address:
+                self._send_json(400, {"error": "address required"})
+                return
+            action = payload.get("action", "add")
+            nmac = normalize_mac(str(address))
+            if action == "toggle":
+                if nmac in TACTICAL.watchlist:
+                    TACTICAL.remove_watchlist(address)
+                else:
+                    TACTICAL.add_watchlist(address)
+            elif action == "remove":
+                TACTICAL.remove_watchlist(address)
+            else:
+                TACTICAL.add_watchlist(address)
+            self._send_json(200, {"ok": True, "watchlist": list(TACTICAL.watchlist)})
+            return
+
         if path == "/api/scan":
             snap = STATE.snapshot()
             if snap["phase"] in ("running", "resolving", "pulling"):
@@ -764,8 +589,8 @@ class Handler(BaseHTTPRequestHandler):
 
 def main() -> None:
     server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
-    print(f"BLE scan server: http://127.0.0.1:{PORT}/")
-    print("Open the page — names resolve from broadcast, paired, GATT, and inference.")
+    print(f"#houseofasher tactical BLE HUD: http://127.0.0.1:{PORT}/")
+    print("SWEEP → ABORT → DECRYPT → EXFIL — mission presets in dashboard.")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

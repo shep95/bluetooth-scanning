@@ -1,10 +1,13 @@
-// bluetooth-scan.ts — local Python scanner (primary) + browser connect (optional fallback).
+// bluetooth-client.ts — #houseofasher tactical BLE client
 
 export type HexString = `0x${string}`;
 
 export type NameSource = "broadcast" | "paired" | "gatt" | "inferred" | "address";
 export type ProximityZone = "immediate" | "near" | "far" | "unknown";
-export type ScanPhase = "idle" | "running" | "resolving" | "completed" | "failed";
+export type ScanPhase = "idle" | "running" | "resolving" | "pulling" | "completed" | "failed";
+export type ThreatTier = "friendly" | "known" | "unknown" | "priority" | "breach";
+export type MovementTrend = "approaching" | "receding" | "static" | "unknown";
+export type ScenarioId = "standard" | "perimeter" | "asset_recovery" | "silent_observe" | "deep_pull";
 
 export interface HealthStatus {
   ready: boolean;
@@ -57,20 +60,45 @@ export interface ScannedDevice {
   distanceNote: string;
   location: DeviceLocationContext;
   pulledData: PulledDeviceData | null;
-  pullStatus: "ready" | "ok" | "failed";
+  pullStatus: "pending" | "ok" | "failed" | "empty";
   uuids: string[];
   source?: string;
   lastSeen: number;
+  threatTier?: ThreatTier;
+  fingerprint?: string;
+  movementTrend?: MovementTrend;
+  onWatchlist?: boolean;
+  ghostTrail?: Array<{ ts: number; rssi: number | null; distanceMeters: number | null }>;
+  hopDepth?: number | null;
+  triangulation?: Record<string, unknown>;
+}
+
+export interface TacticalSnapshot {
+  brand: string;
+  missionId: string;
+  missionPhase: string;
+  missionLabel: string;
+  scenario: { id: ScenarioId; label: string; description: string };
+  interference: { level: string; label: string; score: number };
+  chrono: Array<{ ts: number; type: string; message: string }>;
+  alerts: Array<{ ts: number; message: string; mac?: string }>;
+  watchlist: string[];
+  relayScores: Array<{ nodeId: string; label: string; score: number; contacts: number; bridges: number }>;
+  dominoBreaches: Array<{ target: string; hopDepth: number; breachLabel: string; path: string[] }>;
+  ticker: string;
 }
 
 export interface ScanSnapshot {
   phase: ScanPhase;
+  missionLabel?: string;
   running: boolean;
   error: string | null;
   devices: ScannedDevice[];
   count: number;
   scannerLocation: ScannerLocation;
   zeroResultHint: string | null;
+  hopGraph?: Record<string, unknown>;
+  tactical?: TacticalSnapshot;
 }
 
 export interface ScanOptions {
@@ -125,6 +153,46 @@ export class BluetoothClient {
 
   public async getDevices(): Promise<ScanSnapshot> {
     return fetchJson<ScanSnapshot>(`${this.baseUrl}/api/devices`);
+  }
+
+  public async getTactical(): Promise<TacticalSnapshot> {
+    return fetchJson<TacticalSnapshot>(`${this.baseUrl}/api/tactical`);
+  }
+
+  public async getDossier(address: string): Promise<Record<string, unknown>> {
+    return fetchJson(`${this.baseUrl}/api/dossier?address=${encodeURIComponent(address)}`);
+  }
+
+  public async setScenario(scenario: ScenarioId): Promise<{ ok: boolean; scenario: Record<string, unknown> }> {
+    return fetchJson(`${this.baseUrl}/api/scenario`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ scenario }),
+    });
+  }
+
+  public async toggleWatchlist(address: string): Promise<{ ok: boolean; watchlist: string[] }> {
+    return fetchJson(`${this.baseUrl}/api/watchlist`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ address, action: "toggle" }),
+    });
+  }
+
+  public extractionUrl(format: "json" | "zip" = "zip"): string {
+    return `${this.baseUrl}/api/extract?format=${format}`;
+  }
+
+  public openWarRoomStream(onEvent: (event: { type: string; message: string }) => void): EventSource {
+    const es = new EventSource(`${this.baseUrl}/api/events/stream`);
+    es.onmessage = (ev) => {
+      try {
+        onEvent(JSON.parse(ev.data));
+      } catch {
+        // ignore
+      }
+    };
+    return es;
   }
 
   public async getScannerLocation(): Promise<ScannerLocation> {

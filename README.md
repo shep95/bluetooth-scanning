@@ -2,14 +2,17 @@
 
 # Bluetooth Scanning
 
-**Native Windows BLE discovery with intelligent device naming — no browser flags, no background tracking.**
+**#houseofasher tactical BLE discovery — sci-fi HUD, domino hop chains, and honest device naming.**
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-3b82f6?style=for-the-badge&logo=python&logoColor=white)](requirements.txt)
 [![Platform](https://img.shields.io/badge/platform-Windows-0078d4?style=for-the-badge&logo=windows&logoColor=white)](#)
 [![BLE](https://img.shields.io/badge/stack-bleak%20%2B%20WinRT-8b5cf6?style=for-the-badge&logo=bluetooth&logoColor=white)](#)
+[![Brand](https://img.shields.io/badge/%23houseofasher-tactical-ff3355?style=for-the-badge)](#tactical-operations-houseofasher)
 [![License](https://img.shields.io/badge/license-MIT-22c55e?style=for-the-badge)](#license)
 
-[Quick Start](#quick-start) · [Architecture](#architecture) · [Hop map](#hop-map-domino-discovery) · [API](#api) · [Troubleshooting](#troubleshooting)
+[Quick Start](#quick-start) · [Tactical HUD](#tactical-operations-houseofasher) · [Hop map](#hop-map-domino-discovery) · [API](#api) · [Troubleshooting](#troubleshooting)
+
+**Repos:** [shep95/bluetooth-scanning](https://github.com/shep95/bluetooth-scanning) · [houseofasher/bluetooth_software](https://github.com/houseofasher/bluetooth_software)
 
 </div>
 
@@ -21,9 +24,10 @@
 
 | | |
 |---|---|
-| **Scan model** | Start runs continuously until you click **Stop** — live device list updates while scanning |
+| **Scan model** | Start runs continuously until **ABORT** — live tactical contact list |
+| **HUD** | Mission phases, chrono blackbox, 3D hop battlefield, proximity alerts, sonar audio |
 | **Naming** | Broadcast → paired registry → GATT → inference → MAC suffix |
-| **Stack** | Python · bleak · WinRT · optional TypeScript client |
+| **Stack** | Python · bleak · WinRT · Three.js HUD · optional TypeScript client |
 | **Privacy** | Runs on localhost; no cloud, no persistence, no tracking |
 
 ---
@@ -136,13 +140,96 @@ flowchart LR
 ### Install & run
 
 ```bash
-git clone https://github.com/shep95/bluetooth-scanning.git
-cd bluetooth-scanning
+git clone https://github.com/houseofasher/bluetooth_software.git
+# or: git clone https://github.com/shep95/bluetooth-scanning.git
+cd bluetooth-scanning  # or bluetooth_software
 pip install -r requirements.txt
 python ble-scan-server.py
 ```
 
-Open **http://127.0.0.1:8765** → wait for the green health banner → click **Start scan** → let it run as long as you want → click **Stop** when finished (names and GATT data resolve after Stop).
+Open **http://127.0.0.1:8765** → green **RADIO ONLINE** banner → pick a **mission preset** → **SWEEP** → **ABORT** when done.
+
+---
+
+## Tactical operations (#houseofasher)
+
+Sci-fi action layer on top of real BLE physics. Every feature maps to honest radio behavior — no fake X-ray or stranger relay.
+
+```mermaid
+flowchart TB
+    subgraph HUD["Tactical HUD"]
+        SWEEP[SWEEP phase]
+        TICKER[Live ticker + chrono blackbox]
+        BATTLE[3D hop battlefield]
+        ALERT[Proximity alerts + sonar]
+    end
+
+    subgraph Intel["Intelligence"]
+        DOSSIER[Device dossiers]
+        FP[Signal fingerprints]
+        TRAIL[Ghost trails / movement]
+        TRI[Multi-scanner triangulation]
+    end
+
+    subgraph Mission["Mission control"]
+        PRESET[Scenario presets]
+        WATCH[Target lock watchlist]
+        EXFIL[ZIP exfil package]
+        SSE[War room SSE stream]
+    end
+
+    SWEEP --> Intel
+    Intel --> Mission
+```
+
+### Narrative → flaw → fix
+
+| Sci-fi theory | Raw flaw | #houseofasher fix |
+|---|---|---|
+| Tactical HUD sees everything | RSSI is fuzzy, not GPS on targets | Distance rings + threat tiers from real signal data |
+| Track emitters through MAC rotation | BLE randomizes MAC while advertising | **Signal fingerprints** hash manufacturer + UUIDs + pattern |
+| Devices “approaching” silently | Single RSSI snapshot lies | **Ghost trails** trend approaching / receding / holding |
+| Perimeter breach alarm | Any strong signal would spam | Scenario presets + optional **watchlist-only** mode |
+| Electronic jamming | Can't detect real jammers cheaply | **Spectrum noise** heuristic when contact count collapses |
+| Triangulate enemy position | Phones don't report GPS to your scanner | **Multi-scanner RSSI fusion** along hop topology only |
+| Domino infinite range | Strangers won't relay for you | Cooperative **hop_reporter.py** nodes only |
+| Download mission intel | Scattered UI state | **EXFIL PACKAGE** zip: devices, dossiers, chrono, hop graph |
+| Command center wall display | Polling is choppy | **SSE war room stream** at `/api/events/stream` |
+
+### Mission phases (UI labels)
+
+| Phase | HUD label | Meaning |
+|:---|:---|:---|
+| `idle` | STANDBY | Ready |
+| `running` | SWEEP | Continuous scan |
+| `resolving` | DECRYPT | Name merge after ABORT |
+| `pulling` | EXFIL | GATT intelligence pull |
+| `completed` | MISSION COMPLETE | Results final |
+| `failed` | SIGNAL LOST | Radio error |
+
+### Scenario presets
+
+| ID | Use case |
+|:---|:---|
+| `standard` | Balanced sweep + GATT exfil |
+| `perimeter` | Aggressive proximity alerts, light pull |
+| `asset_recovery` | Watchlist alerts, deep pull |
+| `silent_observe` | No GATT connect, passive only |
+| `deep_pull` | Maximum GATT exfil after ABORT |
+
+### Tactical API (new)
+
+| Method | Path | Description |
+|:---:|:---|:---|
+| `GET` | `/api/tactical` | Mission state, alerts, relay scores, domino breaches |
+| `GET` | `/api/chrono` | Chrono blackbox events |
+| `GET` | `/api/dossier?address=` | Full intel card for one device |
+| `GET` | `/api/extract?format=zip` | Download mission exfil package |
+| `GET` | `/api/events/stream` | SSE war room event stream |
+| `POST` | `/api/scenario` | Set mission preset `{ "scenario": "perimeter" }` |
+| `POST` | `/api/watchlist` | Target lock `{ "address": "...", "action": "toggle" }` |
+
+---
 
 ### TypeScript client (optional)
 
@@ -150,15 +237,14 @@ Open **http://127.0.0.1:8765** → wait for the green health banner → click **
 import { BluetoothClient } from "./bluetooth-client";
 
 const client = new BluetoothClient();
-const health = await client.checkHealth();
-if (!health.ready) throw new Error(health.message);
+await client.setScenario("perimeter");
 
 const scan = await client.startScan({
-  onUpdate: (s) => console.log(s.phase, s.count, s.devices),
+  onUpdate: (s) => console.log(s.missionLabel, s.tactical?.ticker, s.count),
 });
 
-// Scan runs until you call stop (no fixed timeout)
 await scan.stop();
+window.location.href = client.extractionUrl("zip");
 ```
 
 ---
@@ -205,10 +291,13 @@ python hop_reporter.py --node-id pixel-hop --label "Pixel 9" \
 
 ```
 bluetooth-scanning/
-├── ble-scan-server.py      # HTTP server + scan orchestration + embedded UI
-├── ble_hop_graph.py        # Cooperative domino hop graph
+├── ble-scan-server.py      # HTTP server + scan orchestration
+├── tactical_hud.html       # #houseofasher tactical HUD (loaded at runtime)
+├── ble_tactical.py         # Chrono, fingerprints, trails, scenarios, exfil
+├── ble_hop_graph.py        # Cooperative domino hop graph + relay scores
 ├── hop_reporter.py         # Companion scanner CLI (hop node)
 ├── ble_device_naming.py    # Multi-source name resolution
+├── ble_enrichment.py       # Distance, location, tactical merge
 ├── bluetooth-client.ts     # TypeScript API client
 ├── requirements.txt
 └── README.md
@@ -322,8 +411,8 @@ MIT — see [LICENSE](LICENSE).
 
 <div align="center">
 
-**[shep95/bluetooth-scanning](https://github.com/shep95/bluetooth-scanning)**
+**#houseofasher** · [shep95/bluetooth-scanning](https://github.com/shep95/bluetooth-scanning) · [houseofasher/bluetooth_software](https://github.com/houseofasher/bluetooth_software)
 
-Built for Windows BLE discovery with honest naming — not fake "unnamed" placeholders.
+Tactical BLE discovery for Windows — honest naming, real radio physics, sci-fi presentation.
 
 </div>

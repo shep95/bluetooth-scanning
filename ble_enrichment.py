@@ -8,6 +8,7 @@ from ble_device_naming import DeviceSignals, format_mac, normalize_mac, resolve_
 from ble_distance import distance_payload
 from ble_location import ScannerLocation, location_context_for_device
 from ble_paired_windows import lookup_paired_name, name_from_paired_values
+from ble_tactical import TACTICAL
 
 
 def rssi_human(rssi: int | None) -> str:
@@ -67,6 +68,8 @@ def build_device_record(
     paired_names: dict[str, str],
     scanner: ScannerLocation,
     pulled_data: dict[str, Any] | None = None,
+    hop_depth: int | None = None,
+    hop_graph: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     record = signals_to_record(signals, paired_names)
     resolved = resolve_name(signals, paired_names)
@@ -101,6 +104,13 @@ def build_device_record(
         record["pullStatus"] = "failed"
     else:
         record["pullStatus"] = "empty"
+
+    tactical = TACTICAL.on_device_update(signals, record, hop_depth)
+    record.update(tactical)
+    if hop_graph:
+        tri = TACTICAL.build_dossier(record, hop_graph).get("triangulation")
+        if tri:
+            record["triangulation"] = tri
     return record
 
 
