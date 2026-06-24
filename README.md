@@ -403,39 +403,63 @@ window.location.href = client.extractionUrl("zip");
 
 ## Hop map (domino discovery)
 
-**Theory:** Device 1 sees Device 2, Device 2 sees Device 3 — a domino chain that extends discovery beyond one radio.
+**Theory:** Each scanner hears nearby devices and **reports everything back to the root mapper** (your PC). Device 1 sees Device 2, Device 2 (if it's a cooperative hop node) POSTs that data home — domino chains extend the map.
 
-**Reality:** Only **cooperative scanners** you register can hop. Strangers' phones do not relay.
+**Reality:** Only **cooperative scanners** running `hop_reporter.py` relay data. Passive BLE peripherals (headphones, strangers' phones) do **not** run software — they appear as leaf nodes only when a hop scanner hears them.
 
 ```mermaid
 flowchart LR
-    PC[This PC scanner] -->|hop 1| B[Device B]
-    B -->|bridge| PIX[Pixel hop scanner]
-    PIX -->|hop 1| C[Device C]
-    PIX -->|hop 1| D[Device D]
-    PC -.->|hop 2 via bridge| C
-    PC -.->|hop 2 via bridge| D
+    subgraph Root["Root mapper (This PC)"]
+        PC[BLE sweep + merge]
+        API["/api/hop/report ingest"]
+    end
+
+    subgraph HopNode["Cooperative hop scanner (Pixel)"]
+        PIX[hop_reporter.py --loop]
+    end
+
+    PC -->|hop 1 · direct radio| PIX
+    PC -->|hop 1 · direct radio| A[Device A]
+
+    PIX -->|POST all observations| API
+    PIX -->|hop 1 · Pixel's radio| C[Device C]
+    PIX -->|hop 1 · Pixel's radio| D[Device D]
+
+    API --> PC
+    PC -.->|merged hop 2| C
+    PC -.->|merged hop 2| D
 ```
+
+### Data flows back to root
+
+| Scanner | What it reports | How |
+|:---|:---|:---|
+| **This PC** | Every BLE contact its radio hears | Auto every 5s via `ingest_hop_live()` |
+| **Pixel / hop node** | **Every** device **it** hears | `POST /api/hop/report` with full `observations[]` |
+| **Listening post** | Same — all contacts at fixed location | `hop_reporter.py --listening-post --loop` |
+
+Root mapper **merges** all reports into one contact list (`hopRelay` in `/api/devices`). Devices only heard by a hop node show `nameSource: hop_relay` and `reportedByScanner` in the HUD.
 
 ### Run the hop chain
 
-1. Start the server and **Start scan** on your PC (root scanner).
-2. On another machine or phone hotspot network, run a **hop reporter**:
+1. Start the server on your PC (root mapper). Sweep auto-runs.
+2. On a phone or second PC on the **same network**, run a hop reporter — it brings back **all** devices it maps:
 
 ```bash
-# Example: Pixel as hop node 2 (use your PC's LAN IP if remote)
-python hop_reporter.py --node-id pixel-hop --label "Pixel 9" \
+# Phone must reach PC — use LAN IP; set BLE_BIND_ALL=1 on server if needed
+python hop_reporter.py --loop --node-id pixel-hop --label "Pixel 9" \
   --self-address C0:1C:6A:A4:93:C6 \
   --server http://192.168.1.10:8765
 ```
 
-3. Open the dashboard **Hop map** section — chains show `This PC → Pixel 9 → …`.
+3. Open the HUD — **Signal contacts** includes hop-relayed devices. **Hop map** shows depth-2 chains like `This PC → Pixel 9 → Device C`.
 
 | Flaw (raw theory) | Fix (this build) |
 |---|---|
-| Unlimited passive hops through strangers | Only registered `hop/report` nodes |
-| Infinite distance | Each hop is still ~10–30 m radio; more hops = more of your scanners |
-| One scanner sees all | Server merges graphs from PC + companions |
+| Hop node hears devices root cannot | `hop_reporter` POSTs full observation list to root |
+| Data scattered per scanner | `ble_hop_merge.merge_hop_relay_devices()` unifies `/api/devices` |
+| Unlimited passive hops through strangers | Only registered `hop/report` nodes relay |
+| Infinite distance | Each hop is still ~10–30 m radio; more hops = more of **your** scanners |
 
 ---
 
@@ -454,6 +478,7 @@ bluetooth-scanning/
 ├── ble_adv_intel.py        # Passive adv archaeology (iBeacon, Eddystone, mfg hints)
 ├── ble_gatt_pull.py        # Deep GATT exfil + service atlas + exfil tiers
 ├── ble_hop_graph.py        # Cooperative domino hop graph + relay scores
+├── ble_hop_merge.py        # Merge hop scanner observations into root device list
 ├── ble_location.py         # Scanner GPS + Nominatim reverse geocode
 ├── ble_distance.py         # RSSI → distance estimate + proximity zones
 ├── ble_enrichment.py       # Merge naming, distance, passive, GATT, theories

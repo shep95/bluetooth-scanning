@@ -894,16 +894,20 @@
           sci.pursuit?.bearing,
           sci.geofence?.breach ? "BREACH" : null,
         ].filter(Boolean).map((t) => `<span class="sci-tag">${escapeHtml(t)}</span>`).join("");
-        const pullLabel = { pending: "queued", ok: "pulled", failed: "blocked", empty: "empty" }[d.pullStatus] || d.pullStatus;
+        const pullLabel = { pending: "queued", ok: "pulled", failed: "blocked", empty: "empty", hop_relay: "hop relay" }[d.pullStatus] || d.pullStatus;
+        const hopRelayTag = d.hopRelayOnly
+          ? `<span class="sci-tag">HOP RELAY · ${escapeHtml(d.reportedByScanner || "?")}</span>`
+          : (d.alsoReportedBy?.length ? `<span class="sci-tag">also via ${escapeHtml(d.alsoReportedBy.join(", "))}</span>` : "");
+        const hopDepthLabel = d.hopDepth != null ? ` · hop ${d.hopDepth}` : "";
         return `<li class="device${pri}${teamClass}" data-id="${escapeHtml(d.id)}">
           ${ring}
           <strong>${escapeHtml(d.displayName || d.name || "Unknown")}
             <span class="tier ${escapeHtml(tier)}">${TIER_LABELS[tier] || tier}</span>
             ${exfilTierBadge(d.exfilTier)}
-            <span class="pull-status">pull: ${escapeHtml(pullLabel || "?")}</span>
+            <span class="pull-status">pull: ${escapeHtml(pullLabel || "?")}${hopDepthLabel}</span>
           </strong>
           <span class="meta">~${escapeHtml(d.distanceLabel || "?")} · RSSI ${d.rssi ?? "?"} dBm · ${trend}</span>
-          <div>${tags}</div>
+          <div>${tags}${hopRelayTag}</div>
           <span class="meta">MAC <code>${escapeHtml(d.macAddress || d.id)}</code>${d.identityAddress ? ` · identity <code>${escapeHtml(d.identityAddress)}</code>` : ""}</span>
           ${fp}
           <div class="device-actions">
@@ -1014,7 +1018,10 @@
       updateTacticalMap(data);
       updateBattlefield(data.hopGraph);
       hopStats.textContent = data.hopGraph
-        ? `${data.hopGraph.scannerCount} scanner(s) · ${data.hopGraph.nodeCount} nodes · max depth ${data.hopGraph.maxHopDepth}`
+        ? `${data.hopGraph.scannerCount} scanner(s) · ${data.hopGraph.nodeCount} nodes · max depth ${data.hopGraph.maxHopDepth}` +
+          (data.hopRelay
+            ? ` · ${data.hopRelay.directContacts} direct + ${data.hopRelay.relayOnlyContacts} hop-relayed → root map`
+            : "")
         : "";
 
       const count = data.count || 0;

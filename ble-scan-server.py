@@ -29,6 +29,7 @@ from ble_device_naming import (
 from ble_enrichment import build_device_record, remember_paired_aliases
 from ble_gatt_pull import pull_device_data_sync, pull_devices_sequential
 from ble_hop_graph import HOP_GRAPH
+from ble_hop_merge import hop_relay_summary, merge_hop_relay_devices
 from ble_location import SCANNER_LOCATION, reverse_geocode
 from ble_paired_windows import load_all_paired_names
 from ble_tactical import SCENARIOS, TACTICAL, mission_label
@@ -106,6 +107,8 @@ class ScanState:
                 key=lambda d: d.get("rssi") if d.get("rssi") is not None else -999,
                 reverse=True,
             )
+            device_list = merge_hop_relay_devices(device_list, hop_graph)
+            hop_relay = hop_relay_summary(hop_graph, device_list)
             TACTICAL.on_scan_tick(len(device_list), device_list, hop_graph)
             tactical = TACTICAL.snapshot(self.phase, hop_graph, device_list)
             snap = {
@@ -127,6 +130,7 @@ class ScanState:
                 "startedAt": self.started_at,
                 "zeroResultHint": ZERO_RESULT_HINT if self.phase == "running" and not device_list else None,
                 "hopGraph": hop_graph,
+                "hopRelay": hop_relay,
                 "tactical": tactical,
             }
             TACTICAL.record_replay(snap)
@@ -785,6 +789,12 @@ class Handler(BaseHTTPRequestHandler):
                 if payload.get("listeningPost") and node_id:
                     SCI_FI.register_listening_post(node_id)
                     TACTICAL.log("deaddrop", f"LISTENING POST online · {payload.get('nodeLabel', node_id)}", {"nodeId": node_id})
+                obs_count = len(payload.get("observations") or [])
+                TACTICAL.log(
+                    "hop",
+                    f"HOP INGEST · {payload.get('nodeLabel', node_id)} → {obs_count} device(s) to root map",
+                    {"nodeId": node_id, "observations": obs_count},
+                )
                 self._send_json(200, {"ok": True, "hopGraph": HOP_GRAPH.snapshot()})
             except ValueError as exc:
                 self._send_json(400, {"error": str(exc)})
