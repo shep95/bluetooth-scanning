@@ -4,7 +4,9 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>houseofasher · Tactical BLE HUD</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
   <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
   <style>
     :root {
       --bg: #0a0e14; --panel: #121820; --border: #1e2a3a;
@@ -110,6 +112,14 @@
     #sciFiPanel, #replayPanel, #theoriesPanel { font-size: 0.72rem; }
     .sci-tag { display: inline-block; margin: 0.1rem; padding: 0.1rem 0.3rem; border: 1px solid var(--border); border-radius: 3px; color: var(--amber); }
     #replaySlider { width: 100%; }
+    #tacticalMap { width: 100%; height: 360px; border-radius: 6px; z-index: 1; }
+    .leaflet-container { background: #0a0e14; font-family: inherit; }
+    #mapNote { font-size: 0.72rem; color: var(--muted); margin-top: 0.5rem; }
+    .map-legend { display: flex; flex-wrap: wrap; gap: 0.5rem 1rem; font-size: 0.7rem; color: var(--muted); margin-top: 0.5rem; }
+    .map-legend span::before { content: "● "; }
+    .map-legend .sc::before { color: #39ff14; }
+    .map-legend .hop::before { color: #00e5ff; }
+    .map-legend .dev::before { color: #ffb020; }
   </style>
 </head>
 <body>
@@ -138,6 +148,17 @@
         <div id="status" class="meta">Idle.</div>
         <div id="location" class="meta" style="margin-top:0.5rem;">
           Location not set — <button id="locBtn" type="button">Share scanner GPS</button>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>Tactical map (Leaflet / OpenStreetMap)</h2>
+        <div id="tacticalMap"></div>
+        <div id="mapNote" class="meta">Share scanner GPS to plot contacts. Device pins use RSSI distance — direction is illustrative only.</div>
+        <div class="map-legend">
+          <span class="sc">Root scanner</span>
+          <span class="hop">Hop node</span>
+          <span class="dev">BLE contact (estimated)</span>
         </div>
       </div>
 
@@ -199,6 +220,8 @@
     let lastCount = 0;
     let audioCtx = null;
     let scene, camera, renderer, nodeMeshes = {};
+    let tacticalMap = null;
+    const mapLayers = { markers: [], circles: [], lines: [] };
 
     const healthEl = document.getElementById("health");
     const statusEl = document.getElementById("status");
@@ -255,6 +278,126 @@
       toast.classList.add("show");
       setTimeout(() => toast.classList.remove("show"), 4000);
       playBlip(880, 0.15);
+    }
+
+    function hashBearing(s) {
+      let h = 0;
+      for (let i = 0; i < s.length; i++) h = ((h << 5) - h) + s.charCodeAt(i);
+      return Math.abs(h) % 360;
+    }
+
+    function offsetLatLon(lat, lon, meters, bearingDeg) {
+      const R = 6378137;
+      const br = bearingDeg * Math.PI / 180;
+      const d = meters / R;
+      const lat1 = lat * Math.PI / 180;
+      const lon1 = lon * Math.PI / 180;
+      const lat2 = Math.asin(Math.sin(lat1) * Math.cos(d) + Math.cos(lat1) * Math.sin(d) * Math.cos(br));
+      const lon2 = lon1 + Math.atan2(Math.sin(br) * Math.sin(d) * Math.cos(lat1), Math.cos(d) - Math.sin(lat1) * Math.sin(lat2));
+      return [lat2 * 180 / Math.PI, lon2 * 180 / Math.PI];
+    }
+
+    function clearMapLayers() {
+      mapLayers.markers.forEach((l) => tacticalMap.removeLayer(l));
+      mapLayers.circles.forEach((l) => tacticalMap.removeLayer(l));
+      mapLayers.lines.forEach((l) => tacticalMap.removeLayer(l));
+      mapLayers.markers = [];
+      mapLayers.circles = [];
+      mapLayers.lines = [];
+    }
+
+    function initTacticalMap(lat, lon) {
+      if (!tacticalMap) return;
+      if (!tacticalMap._hasGps) {
+        tacticalMap.setView([lat, lon], 17);
+        tacticalMap._hasGps = true;
+      } else if (!tacticalMap._userPanned) {
+        tacticalMap.setView([lat, lon], Math.max(tacticalMap.getZoom(), 16));
+      }
+    }
+
+    function updateTacticalMap(data) {
+      const mapNote = document.getElementById("mapNote");
+      const loc = data.scannerLocation;
+      if (!loc?.ready) {
+        mapNote.textContent = "Share scanner GPS to enable map — BLE devices have no GPS of their own.";
+        return;
+      }
+      const lat = loc.latitude;
+      const lon = loc.longitude;
+      initTacticalMap(lat, lon);
+      clearMapLayers();
+      mapNote.textContent = loc.addressShort
+        ? `Scanner @ ${loc.addressShort} · rings = RSSI estimate · not device street address`
+        : "Scanner GPS active · device positions are illustrative bearing from RSSI distance";
+
+      const root = L.circleMarker([lat, lon], {
+        radius: 10, color: "#39ff14", fillColor: "#39ff14", fillOpacity: 0.95, weight: 2,
+      });
+      root.bindPopup(`<strong>Root scanner</strong><br>${escapeHtml(loc.addressShort || "This PC")}`);
+      root.addTo(tacticalMap);
+      mapLayers.markers.push(root);
+
+      if (loc.accuracyMeters) {
+        const acc = L.circle([lat, lon], {
+          radius: loc.accuracyMeters, color: "#39ff14", fillOpacity: 0.04, weight: 1, dashArray: "4",
+        });
+        acc.addTo(tacticalMap);
+        mapLayers.circles.push(acc);
+      }
+
+      const geofence = L.circle([lat, lon], {
+        radius: 15, color: "#00e5ff", fillOpacity: 0.03, weight: 1, dashArray: "6 4",
+      });
+      geofence.bindPopup("15 m co-location perimeter (your scanner zone)");
+      geofence.addTo(tacticalMap);
+      mapLayers.circles.push(geofence);
+
+      (data.hopGraph?.scanners || []).forEach((s) => {
+        if (s.isRoot || s.latitude == null || s.longitude == null) return;
+        const m = L.circleMarker([s.latitude, s.longitude], {
+          radius: 8, color: "#00e5ff", fillColor: "#00e5ff", fillOpacity: 0.85, weight: 2,
+        });
+        m.bindPopup(`<strong>${escapeHtml(s.label)}</strong><br>Hop / listening post`);
+        m.addTo(tacticalMap);
+        mapLayers.markers.push(m);
+        const line = L.polyline([[lat, lon], [s.latitude, s.longitude]], {
+          color: "#00e5ff", weight: 2, opacity: 0.55, dashArray: "8 6",
+        });
+        line.addTo(tacticalMap);
+        mapLayers.lines.push(line);
+      });
+
+      const colors = {
+        friendly: "#39ff14", known: "#00e5ff", unknown: "#ffb020",
+        priority: "#ff3355", breach: "#ff6699",
+      };
+      (data.devices || []).forEach((d) => {
+        const dist = Math.max(3, d.distanceMeters || 8);
+        const bearing = hashBearing(String(d.id || d.macAddress || "x"));
+        const pos = offsetLatLon(lat, lon, dist, bearing);
+        const col = colors[d.threatTier] || "#888";
+        const ring = L.circle(pos, {
+          radius: dist, color: col, fillOpacity: 0.07, weight: 1, opacity: 0.7,
+        });
+        ring.bindPopup(
+          `<strong>${escapeHtml(d.displayName || d.id)}</strong><br>` +
+          `~${escapeHtml(d.distanceLabel || "?")} · RSSI ${d.rssi ?? "?"} dBm<br>` +
+          `<em>Direction illustrative — BLE has no compass bearing.</em>`
+        );
+        ring.addTo(tacticalMap);
+        mapLayers.circles.push(ring);
+        const dot = L.circleMarker(pos, {
+          radius: 5, color: col, fillColor: col, fillOpacity: 0.9, weight: 1,
+        });
+        dot.addTo(tacticalMap);
+        mapLayers.markers.push(dot);
+      });
+
+      if (!tacticalMap._userPanned && tacticalMap._hasGps) {
+        tacticalMap.setView([lat, lon], Math.max(tacticalMap.getZoom(), 16));
+      }
+      setTimeout(() => tacticalMap.invalidateSize(), 80);
     }
 
     function initBattlefield() {
@@ -495,6 +638,7 @@
       renderTactical(tac);
       renderDevices(data.devices ?? []);
       renderThreatBoard(data.devices ?? []);
+      updateTacticalMap(data);
       updateBattlefield(data.hopGraph);
       hopStats.textContent = data.hopGraph
         ? `${data.hopGraph.scannerCount} scanner(s) · ${data.hopGraph.nodeCount} nodes · max depth ${data.hopGraph.maxHopDepth}`
@@ -600,6 +744,20 @@
       const ready = await refreshHealth();
       if (!ready) return;
       pollTimer = setInterval(poll, 400);
+      if (navigator.geolocation) {
+        navigator.geolocation.getCurrentPosition(async (pos) => {
+          await fetch("/api/location", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              latitude: pos.coords.latitude,
+              longitude: pos.coords.longitude,
+              accuracyMeters: pos.coords.accuracy,
+            }),
+          });
+          await poll();
+        }, () => {}, { enableHighAccuracy: true, timeout: 12000 });
+      }
       const res = await fetch("/api/scan", { method: "POST" });
       const data = await res.json();
       if (res.ok || data.alreadyRunning) {
@@ -672,6 +830,16 @@
     }
 
     initBattlefield();
+    if (typeof L !== "undefined") {
+      const m = document.getElementById("tacticalMap");
+      if (m) {
+        tacticalMap = L.map("tacticalMap").setView([20, 0], 2);
+        L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
+          attribution: "&copy; OSM &copy; CARTO", subdomains: "abcd", maxZoom: 20,
+        }).addTo(tacticalMap);
+        tacticalMap.on("dragstart", () => { tacticalMap._userPanned = true; });
+      }
+    }
     loadScenarios();
     loadTheories();
     bootSweep();

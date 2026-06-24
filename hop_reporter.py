@@ -39,14 +39,29 @@ async def scan_once(duration: float) -> list[dict]:
     return list(seen.values())
 
 
-def post_report(server: str, node_id: str, label: str, self_address: str | None, observations: list[dict], listening_post: bool = False) -> dict:
-    payload = {
+def post_report(
+    server: str,
+    node_id: str,
+    label: str,
+    self_address: str | None,
+    observations: list[dict],
+    listening_post: bool = False,
+    latitude: float | None = None,
+    longitude: float | None = None,
+    accuracy_meters: float | None = None,
+) -> dict:
+    payload: dict = {
         "nodeId": node_id,
         "nodeLabel": label,
         "selfAddress": self_address,
         "observations": observations,
         "listeningPost": listening_post,
     }
+    if latitude is not None and longitude is not None:
+        payload["latitude"] = latitude
+        payload["longitude"] = longitude
+        if accuracy_meters is not None:
+            payload["accuracyMeters"] = accuracy_meters
     body = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
         f"{server.rstrip('/')}/api/hop/report",
@@ -66,6 +81,9 @@ async def run_loop(
     duration: float,
     interval: float,
     listening_post: bool,
+    latitude: float | None,
+    longitude: float | None,
+    accuracy_meters: float | None,
 ) -> None:
     tag = "LISTENING POST" if listening_post else "hop node"
     print(f"Continuous {tag} '{label}' → {server} (scan {duration}s, repeat every {interval}s)")
@@ -73,7 +91,10 @@ async def run_loop(
         observations = await scan_once(duration)
         depth = 0
         try:
-            result = post_report(server, node_id, label, self_address, observations, listening_post)
+            result = post_report(
+                server, node_id, label, self_address, observations, listening_post,
+                latitude, longitude, accuracy_meters,
+            )
             depth = result.get("hopGraph", {}).get("maxHopDepth", 0)
             print(
                 f"[{time.strftime('%H:%M:%S')}] reported {len(observations)} contact(s) · "
@@ -94,12 +115,18 @@ async def main() -> int:
     parser.add_argument("--interval", type=float, default=15.0, help="Seconds between hop reports (loop mode)")
     parser.add_argument("--loop", action="store_true", help="Never stop — continuous domino hop reporting")
     parser.add_argument("--listening-post", action="store_true", help="Register as fixed LISTENING POST dead-drop node")
+    parser.add_argument("--latitude", type=float, default=None, help="Hop node GPS latitude (for map)")
+    parser.add_argument("--longitude", type=float, default=None, help="Hop node GPS longitude (for map)")
+    parser.add_argument("--accuracy-meters", type=float, default=None, help="GPS accuracy in meters")
     args = parser.parse_args()
 
     label = args.label or args.node_id
 
     if args.loop:
-        await run_loop(args.server, args.node_id, label, args.self_address, args.duration, args.interval, args.listening_post)
+        await run_loop(
+            args.server, args.node_id, label, args.self_address, args.duration, args.interval,
+            args.listening_post, args.latitude, args.longitude, args.accuracy_meters,
+        )
         return 0
 
     print(f"Scanning {args.duration}s as hop node '{label}'...")
@@ -107,7 +134,10 @@ async def main() -> int:
     print(f"Seen {len(observations)} device(s), posting to {args.server}...")
 
     try:
-        result = post_report(args.server, args.node_id, label, args.self_address, observations, args.listening_post)
+        result = post_report(
+            args.server, args.node_id, label, args.self_address, observations, args.listening_post,
+            args.latitude, args.longitude, args.accuracy_meters,
+        )
         print(json.dumps(result, indent=2))
         return 0
     except urllib.error.URLError as exc:

@@ -19,6 +19,9 @@ class ScannerNode:
     node_id: str
     label: str
     self_address: str | None = None
+    latitude: float | None = None
+    longitude: float | None = None
+    accuracy_meters: float | None = None
     last_seen: float = 0.0
     is_root: bool = False
 
@@ -63,6 +66,15 @@ class HopGraphState:
 
         obs = payload.get("observations") or []
         now = time.time()
+        lat = payload.get("latitude")
+        lon = payload.get("longitude")
+        acc = payload.get("accuracyMeters")
+        if lat is not None:
+            lat = float(lat)
+        if lon is not None:
+            lon = float(lon)
+        if acc is not None:
+            acc = float(acc)
 
         with self.lock:
             existing = self.scanners.get(node_id)
@@ -70,6 +82,9 @@ class HopGraphState:
                 node_id=node_id,
                 label=label,
                 self_address=self_addr or (existing.self_address if existing else None),
+                latitude=lat if lat is not None else (existing.latitude if existing else None),
+                longitude=lon if lon is not None else (existing.longitude if existing else None),
+                accuracy_meters=acc if acc is not None else (existing.accuracy_meters if existing else None),
                 last_seen=now,
                 is_root=node_id == ROOT_NODE_ID or (existing.is_root if existing else False),
             )
@@ -94,7 +109,13 @@ class HopGraphState:
                 )
             self.observations[node_id] = normalized
 
-    def ingest_pc_scan(self, devices: list[dict[str, Any]]) -> None:
+    def ingest_pc_scan(
+        self,
+        devices: list[dict[str, Any]],
+        latitude: float | None = None,
+        longitude: float | None = None,
+        accuracy_meters: float | None = None,
+    ) -> None:
         """Treat latest PC scan as a hop report from the root scanner."""
         observations = []
         for d in devices:
@@ -109,13 +130,17 @@ class HopGraphState:
                     "seenAt": d.get("lastSeen"),
                 }
             )
-        self.register_scanner_report(
-            {
-                "nodeId": ROOT_NODE_ID,
-                "nodeLabel": "This PC",
-                "observations": observations,
-            }
-        )
+        report: dict[str, Any] = {
+            "nodeId": ROOT_NODE_ID,
+            "nodeLabel": "This PC",
+            "observations": observations,
+        }
+        if latitude is not None and longitude is not None:
+            report["latitude"] = latitude
+            report["longitude"] = longitude
+            if accuracy_meters is not None:
+                report["accuracyMeters"] = accuracy_meters
+        self.register_scanner_report(report)
 
     def _mac_to_node_id(self, mac: str) -> str:
         return f"dev:{normalize_mac(mac)}"
@@ -143,6 +168,9 @@ class HopGraphState:
                 "label": scanner.label,
                 "isRoot": scanner.is_root,
                 "selfAddress": scanner.self_address,
+                "latitude": scanner.latitude,
+                "longitude": scanner.longitude,
+                "accuracyMeters": scanner.accuracy_meters,
                 "lastSeen": scanner.last_seen,
             }
 
@@ -266,6 +294,9 @@ class HopGraphState:
                     "nodeId": s.node_id,
                     "label": s.label,
                     "selfAddress": s.self_address,
+                    "latitude": s.latitude,
+                    "longitude": s.longitude,
+                    "accuracyMeters": s.accuracy_meters,
                     "isRoot": s.is_root,
                     "lastSeen": s.last_seen,
                     "observationCount": len(self.observations.get(s.node_id, [])),

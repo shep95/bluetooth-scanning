@@ -161,6 +161,22 @@ python hop_reporter.py --loop --listening-post --node-id post-1 --label "Listeni
   --server http://YOUR_PC_IP:8765
 ```
 
+### Tactical map (Leaflet)
+
+Open the HUD → allow **Share scanner GPS** (auto-requested on load). The map shows:
+
+| Map element | Meaning |
+|-------------|---------|
+| Green pin | Your PC scanner (real GPS) |
+| Cyan dashed circle | 15 m co-location perimeter |
+| Cyan pins + lines | Hop nodes with `--latitude` / `--longitude` |
+| Colored rings + dots | BLE contacts at RSSI distance — bearing illustrative only |
+
+```bash
+python hop_reporter.py --loop --node-id pixel-hop --label "Pixel 9" \
+  --latitude 40.7128 --longitude -74.0060 --server http://YOUR_PC_IP:8765
+```
+
 ---
 
 ## Tactical operations (#houseofasher)

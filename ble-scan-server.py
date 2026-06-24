@@ -144,7 +144,13 @@ class ScanState:
             self.last_hop_ingest_at = time.time()
         if not device_list:
             return 0
-        HOP_GRAPH.ingest_pc_scan(device_list)
+        loc = SCANNER_LOCATION.snapshot()
+        HOP_GRAPH.ingest_pc_scan(
+            device_list,
+            latitude=loc.get("latitude"),
+            longitude=loc.get("longitude"),
+            accuracy_meters=loc.get("accuracyMeters"),
+        )
         with self.lock:
             self.hop_ingest_count += 1
         max_depth = HOP_GRAPH.snapshot().get("maxHopDepth", 0)
@@ -177,7 +183,13 @@ class ScanState:
                 device_list = list(self.devices.values())
         TACTICAL.on_phase_change(self.phase)
         if device_list:
-            HOP_GRAPH.ingest_pc_scan(device_list)
+            loc = SCANNER_LOCATION.snapshot()
+            HOP_GRAPH.ingest_pc_scan(
+                device_list,
+                latitude=loc.get("latitude"),
+                longitude=loc.get("longitude"),
+                accuracy_meters=loc.get("accuracyMeters"),
+            )
 
     def fail(self, message: str) -> None:
         with self.lock:
