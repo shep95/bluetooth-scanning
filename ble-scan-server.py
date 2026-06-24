@@ -19,12 +19,13 @@ from bleak.exc import BleakBluetoothNotAvailableError, BleakBluetoothNotAvailabl
 
 from ble_device_naming import (
     DeviceSignals,
-    enrich_with_gatt_names,
-    load_windows_paired_names,
+    format_mac,
+    resolve_name,
 )
-from ble_enrichment import build_device_record
-from ble_gatt_pull import pull_device_data_sync
+from ble_enrichment import build_device_record, remember_paired_aliases
+from ble_gatt_pull import pull_device_data_sync, pull_devices_sequential
 from ble_location import SCANNER_LOCATION, reverse_geocode
+from ble_paired_windows import load_all_paired_names
 
 PORT = 8765
 SCAN_SECONDS = 20
@@ -33,7 +34,8 @@ ZERO_RESULT_HINT = (
     "and at least one BLE device nearby and powered on (phone/watch/headphones)."
 )
 
-Phase = Literal["idle", "running", "resolving", "completed", "failed"]
+Phase = Literal["idle", "running", "resolving", "pulling", "completed", "failed"]
+AUTO_PULL_MAX = 10
 
 
 def reason_message(reason: BleakBluetoothNotAvailableReason) -> str:
@@ -74,11 +76,15 @@ class ScanState:
             )
             return {
                 "phase": self.phase,
-                "running": self.phase in ("running", "resolving"),
+                "running": self.phase in ("running", "resolving", "pulling"),
                 "error": self.error,
                 "devices": device_list,
                 "count": len(device_list),
                 "scannerLocation": SCANNER_LOCATION.snapshot(),
+                "pairedDevices": [
+                    {"mac": format_mac(k), "name": v}
+                    for k, v in sorted(self.paired_names.items(), key=lambda x: x[1])
+                ],
                 "startedAt": self.started_at,
                 "finishedAt": self.finished_at,
                 "zeroResultHint": ZERO_RESULT_HINT if self.phase == "completed" and not device_list else None,
@@ -90,7 +96,7 @@ class ScanState:
             self.signals = {}
             self.devices = {}
             self.pulled_data = {}
-            self.paired_names = load_windows_paired_names()
+            self.paired_names = load_all_paired_names()
             self.error = None
             self.stop_flag.clear()
             self.started_at = time.time()
@@ -99,6 +105,10 @@ class ScanState:
     def begin_resolve(self) -> None:
         with self.lock:
             self.phase = "resolving"
+
+    def begin_pull(self) -> None:
+        with self.lock:
+            self.phase = "pulling"
 
     def finish(self) -> None:
         with self.lock:
@@ -118,7 +128,7 @@ class ScanState:
         source: str,
     ) -> None:
         with self.lock:
-            key = device.address
+            key = format_mac(device.address)
             existing = self.signals.get(key)
             if existing is None:
                 existing = DeviceSignals(address=device.address)
@@ -138,13 +148,24 @@ class ScanState:
                 self.devices[key] = record
 
     def set_pulled_data(self, address: str, payload: dict[str, Any]) -> None:
+        key = format_mac(address)
         with self.lock:
-            self.pulled_data[address] = payload
-            signals = self.signals.get(address)
+            self.pulled_data[key] = payload
+            signals = self.signals.get(key)
             if signals:
+                data = payload.get("data") or {}
+                if data.get("osDeviceName"):
+                    signals.os_name = str(data["osDeviceName"])
+                    signals.gatt_name = signals.os_name
+                remember_paired_aliases(self.paired_names, key, payload)
                 record = build_device_record(signals, self.paired_names, SCANNER_LOCATION, payload)
                 record["lastSeen"] = int(time.time() * 1000)
-                self.devices[address] = record
+                self.devices[key] = record
+
+    def has_device(self, address: str) -> bool:
+        key = format_mac(address)
+        with self.lock:
+            return key in self.signals or key in self.devices
 
     def request_stop(self) -> None:
         self.stop_flag.set()
@@ -179,14 +200,47 @@ async def merge_discover_results(timeout: float) -> None:
         STATE.merge_advertisement(device, adv, "discover")
 
 
-async def resolve_names_phase() -> None:
+async def resolve_and_pull_phase() -> None:
     STATE.begin_resolve()
     with STATE.lock:
         signals_copy = dict(STATE.signals)
         paired = dict(STATE.paired_names)
 
-    if not STATE.stop_flag.is_set():
-        await enrich_with_gatt_names(signals_copy, paired)
+    if STATE.stop_flag.is_set():
+        with STATE.lock:
+            STATE.signals = signals_copy
+        STATE.apply_resolved_records()
+        return
+
+    # Pull data from strongest devices — sequential connect required on Windows.
+    ranked = sorted(
+        signals_copy.values(),
+        key=lambda s: s.rssi if s.rssi is not None else -999,
+        reverse=True,
+    )
+    unnamed = [
+        s for s in ranked
+        if resolve_name(s, paired).name_source in ("inferred", "address")
+    ]
+    targets = unnamed[:AUTO_PULL_MAX] if unnamed else ranked[:AUTO_PULL_MAX]
+
+    if targets:
+        STATE.begin_pull()
+
+        def on_each(address: str, result: dict[str, Any]) -> None:
+            key = format_mac(address)
+            if key in signals_copy:
+                data = result.get("data") or {}
+                if data.get("osDeviceName"):
+                    signals_copy[key].os_name = str(data["osDeviceName"])
+                    signals_copy[key].gatt_name = signals_copy[key].os_name
+                elif data.get("deviceName"):
+                    signals_copy[key].gatt_name = str(data["deviceName"])
+            with STATE.lock:
+                remember_paired_aliases(STATE.paired_names, key, result)
+            STATE.set_pulled_data(key, result)
+
+        await pull_devices_sequential([s.address for s in targets], on_each=on_each)
 
     with STATE.lock:
         STATE.signals = signals_copy
@@ -208,7 +262,7 @@ async def run_scan(duration: float) -> None:
 
         if not STATE.stop_flag.is_set():
             await merge_discover_results(timeout=3.0)
-            await resolve_names_phase()
+            await resolve_and_pull_phase()
     except BleakBluetoothNotAvailableError as exc:
         STATE.fail(reason_message(exc.reason))
         return
@@ -216,7 +270,7 @@ async def run_scan(duration: float) -> None:
         STATE.fail(str(exc))
         return
     finally:
-        if STATE.phase in ("running", "resolving"):
+        if STATE.phase in ("running", "resolving", "pulling"):
             STATE.finish()
 
 
@@ -267,6 +321,9 @@ HTML = """<!DOCTYPE html>
     .badge.far { background: #f5f5f5; color: #666; }
     .pull-box { margin-top: 0.5rem; padding: 0.5rem; background: #f8f9fa; border-radius: 4px; font-size: 0.78rem; }
     .pull-box code { word-break: break-all; }
+    .legend { font-size: 0.82rem; color: #444; background: #f8f9fa; border: 1px solid #e5e5e5; border-radius: 6px; padding: 0.6rem 0.75rem; margin-bottom: 1rem; }
+    .legend dt { font-weight: 600; margin-top: 0.35rem; }
+    .legend dd { margin: 0.15rem 0 0 0; color: #666; }
     .meta { color: #666; font-size: 0.8rem; display: block; }
     .empty { color: #888; font-style: italic; }
   </style>
@@ -275,8 +332,17 @@ HTML = """<!DOCTYPE html>
   <h1>Bluetooth LE scan</h1>
   <div id="health">Checking Bluetooth…</div>
   <div id="location" class="meta" style="margin-bottom:0.75rem;padding:0.5rem 0.75rem;border:1px solid #ddd;border-radius:6px;">
-    Location not set — <button id="locBtn" type="button">Share my location</button> (for home address co-location)
+    Location not set — <button id="locBtn" type="button">Share my location</button> (for home street address)
   </div>
+  <div id="paired" class="meta" style="margin-bottom:0.75rem;"></div>
+  <dl class="legend">
+    <dt>Device name</dt>
+    <dd>Pulled automatically from the device when possible (Bluetooth name, model, or paired name).</dd>
+    <dt>RSSI (signal strength)</dt>
+    <dd>Measured in dBm. <strong>Closer to 0 = stronger.</strong> Example: -45 = very close, -80 = farther away. Walls and interference affect this.</dd>
+    <dt>Bluetooth MAC</dt>
+    <dd>A hardware ID like <code>AA:BB:CC:DD:EE:FF</code> — <strong>not</strong> a home street address. Street address comes from your shared location.</dd>
+  </dl>
   <div class="row">
     <button id="startBtn" disabled>Start scan</button>
     <button id="stopBtn" disabled>Stop</button>
@@ -295,6 +361,7 @@ HTML = """<!DOCTYPE html>
     const stopBtn = document.getElementById("stopBtn");
     const locEl = document.getElementById("location");
     const locBtn = document.getElementById("locBtn");
+    const pairedEl = document.getElementById("paired");
 
     const SOURCE_LABELS = {
       broadcast: "advertised",
@@ -305,6 +372,15 @@ HTML = """<!DOCTYPE html>
     };
 
     const ZONE_LABELS = { immediate: "same room", near: "nearby", far: "far", unknown: "?" };
+    const PULL_LABELS = {
+      deviceName: "Device name",
+      batteryLevel: "Battery %",
+      manufacturerName: "Manufacturer",
+      modelNumber: "Model",
+      serialNumber: "Serial",
+      firmwareRevision: "Firmware",
+      hardwareRevision: "Hardware",
+    };
 
     function escapeHtml(s) {
       return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
@@ -320,25 +396,39 @@ HTML = """<!DOCTYPE html>
         const badge = `<span class="badge ${escapeHtml(src)}">${escapeHtml(SOURCE_LABELS[src] || src)}</span>`;
         const zone = d.proximityZone || "unknown";
         const zoneBadge = `<span class="badge ${escapeHtml(zone)}">${escapeHtml(ZONE_LABELS[zone] || zone)}</span>`;
-        const dist = d.distanceLabel ? `<span class="meta"><strong>~${escapeHtml(d.distanceLabel)} away</strong> ${zoneBadge} · RSSI ${d.rssi ?? "?"} dBm</span>` : "";
-        const loc = d.location?.coLocated && d.location.estimatedAddressShort
-          ? `<span class="meta">Likely at your location: ${escapeHtml(d.location.estimatedAddressShort)}</span>`
-          : (d.location?.contextNote ? `<span class="meta">${escapeHtml(d.location.contextNote)}</span>` : "");
-        const mfg = d.manufacturer ? `<span class="meta">Manufacturer: ${escapeHtml(d.manufacturer)}</span>` : "";
+        const dist = d.distanceLabel
+          ? `<span class="meta"><strong>~${escapeHtml(d.distanceLabel)} away</strong> ${zoneBadge}</span>
+             <span class="meta" title="${escapeHtml(d.rssiNote || "")}">RSSI: ${d.rssi ?? "?"} dBm — ${escapeHtml(d.rssiHuman || "signal unknown")}</span>`
+          : `<span class="meta">${escapeHtml(d.rssiHuman || "")}</span>`;
+        const street = d.location?.coLocated && d.location.estimatedAddressShort
+          ? `<span class="meta"><strong>Street address (your location):</strong> ${escapeHtml(d.location.estimatedAddressShort)}</span>`
+          : "";
+        const locNote = d.location?.contextNote
+          ? `<span class="meta">${escapeHtml(d.location.contextNote)}</span>` : "";
+        const mfg = d.manufacturer ? `<span class="meta">Manufacturer (advertised): ${escapeHtml(d.manufacturer)}</span>` : "";
         let pull = "";
         if (d.pulledData?.data && Object.keys(d.pulledData.data).length) {
-          pull = `<div class="pull-box"><strong>Pulled to this device:</strong><br>${Object.entries(d.pulledData.data).map(([k,v]) => `${escapeHtml(k)}: <code>${escapeHtml(v)}</code>`).join("<br>")}</div>`;
-        } else if (d.pulledData?.errors?.length) {
-          pull = `<div class="pull-box">Pull failed: ${escapeHtml(d.pulledData.errors[0])}</div>`;
+          pull = `<div class="pull-box"><strong>Data pulled to this PC:</strong><br>${Object.entries(d.pulledData.data).map(([k,v]) => {
+            const label = PULL_LABELS[k] || k;
+            const val = k === "batteryLevel" ? `${v}%` : v;
+            return `${escapeHtml(label)}: <code>${escapeHtml(val)}</code>`;
+          }).join("<br>")}</div>`;
+        } else if (d.pullStatus === "pending") {
+          pull = `<div class="pull-box">Waiting to connect and pull device data…</div>`;
+        } else if (d.pullStatus === "failed" && d.pulledData?.errors?.length) {
+          pull = `<div class="pull-box">Could not pull data: ${escapeHtml(d.pulledData.errors[0])} — device may not allow connections.</div>`;
+        } else if (d.pullStatus === "empty") {
+          pull = `<div class="pull-box">Connected but no readable data exposed by this device.</div>`;
         }
-        const pullBtn = `<button type="button" class="pullBtn" data-id="${escapeHtml(d.id)}">Pull GATT data here</button>`;
+        const pullBtn = `<button type="button" class="pullBtn" data-id="${escapeHtml(d.id)}">Retry pull</button>`;
         return `
         <li>
-          <strong>${escapeHtml(d.displayName || d.name)}${badge}</strong>
+          <strong>${escapeHtml(d.displayName || d.name || "Unknown device")}${badge}</strong>
           ${dist}
-          ${loc}
+          ${street}
+          ${locNote}
           ${mfg}
-          <span class="meta">MAC: ${escapeHtml(d.id)}</span>
+          <span class="meta">Bluetooth MAC: <code>${escapeHtml(d.macAddress || d.id)}</code> — ${escapeHtml(d.macNote || "hardware ID, not street address")}</span>
           ${d.uuids?.length ? `<span class="meta">Services: ${d.uuids.map(escapeHtml).join(", ")}</span>` : ""}
           ${pull}
           ${pullBtn}
@@ -413,6 +503,9 @@ HTML = """<!DOCTYPE html>
       if (data.scannerLocation?.addressShort) {
         locEl.innerHTML = `<strong>Your location:</strong> ${escapeHtml(data.scannerLocation.addressShort)}`;
       }
+      if (data.pairedDevices?.length) {
+        pairedEl.innerHTML = `<strong>Paired on this PC:</strong> ${data.pairedDevices.map((p) => escapeHtml(p.name)).join(", ")} — names appear after connect phase if BLE uses a random MAC while scanning.`;
+      }
       hintEl.textContent = data.zeroResultHint ?? "";
 
       if (data.phase === "running") {
@@ -422,7 +515,13 @@ HTML = """<!DOCTYPE html>
         return;
       }
       if (data.phase === "resolving") {
-        statusEl.textContent = `Resolving names… ${data.count} device(s)`;
+        statusEl.textContent = `Resolving device names… ${data.count} device(s)`;
+        startBtn.disabled = true;
+        stopBtn.disabled = false;
+        return;
+      }
+      if (data.phase === "pulling") {
+        statusEl.textContent = `Connecting & pulling data from devices… ${data.count} found so far`;
         startBtn.disabled = true;
         stopBtn.disabled = false;
         return;
@@ -565,9 +664,7 @@ class Handler(BaseHTTPRequestHandler):
             if not address:
                 self._send_json(400, {"error": "address required"})
                 return
-            with STATE.lock:
-                known = address in STATE.signals or address in STATE.devices
-            if not known:
+            if not STATE.has_device(address):
                 self._send_json(404, {"error": "Device not in last scan — scan first"})
                 return
             result = pull_device_data_sync(address)
@@ -582,7 +679,7 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/api/scan":
             snap = STATE.snapshot()
-            if snap["phase"] in ("running", "resolving"):
+            if snap["phase"] in ("running", "resolving", "pulling"):
                 self._send_json(409, {"error": "Scan already running"})
                 return
 

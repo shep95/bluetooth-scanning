@@ -124,6 +124,7 @@ class DeviceSignals:
     service_data_keys: list[str] = field(default_factory=list)
     tx_power: int | None = None
     gatt_name: str | None = None
+    os_name: str | None = None
     scan_source: str = "live"
 
     def merge(
@@ -136,6 +137,8 @@ class DeviceSignals:
         candidate = (adv.local_name or device.name or "").strip()
         if candidate and not _looks_like_mac(candidate):
             self.broadcast_name = candidate
+        if device.name and device.name.strip() and not _looks_like_mac(device.name):
+            self.os_name = device.name.strip()
         if adv.rssi is not None:
             self.rssi = adv.rssi
         self.uuids = sorted(set(self.uuids + [str(u) for u in adv.service_uuids]))
@@ -216,6 +219,15 @@ def resolve_name(
     if paired:
         return ResolvedName(
             display_name=paired,
+            name_source="paired",
+            broadcast_name=None,
+            manufacturer=manufacturer_label(signals.manufacturer_data),
+            inferred_detail=None,
+        )
+
+    if signals.os_name:
+        return ResolvedName(
+            display_name=signals.os_name,
             name_source="paired",
             broadcast_name=None,
             manufacturer=manufacturer_label(signals.manufacturer_data),
