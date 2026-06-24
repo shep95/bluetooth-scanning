@@ -122,6 +122,7 @@ class DeviceSignals:
     uuids: list[str] = field(default_factory=list)
     manufacturer_data: dict[int, bytes] = field(default_factory=dict)
     service_data_keys: list[str] = field(default_factory=list)
+    service_data: dict[str, bytes] = field(default_factory=dict)
     tx_power: int | None = None
     gatt_name: str | None = None
     os_name: str | None = None
@@ -146,6 +147,7 @@ class DeviceSignals:
         self.service_data_keys = sorted(
             set(self.service_data_keys + [str(k) for k in adv.service_data])
         )
+        self.service_data.update({str(k): bytes(v) for k, v in adv.service_data.items()})
         if adv.tx_power is not None:
             self.tx_power = adv.tx_power
 

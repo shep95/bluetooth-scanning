@@ -24,11 +24,13 @@
 
 | | |
 |---|---|
-| **Scan model** | Start runs continuously until **ABORT** — live tactical contact list |
-| **HUD** | Mission phases, chrono blackbox, 3D hop battlefield, proximity alerts, sonar audio |
+| **Scan model** | Continuous sweep — radio never stops; **SYNC HOPS** refreshes hop graph + GATT batch |
+| **HUD** | Mission phases, chrono blackbox, Leaflet map, 3D hop battlefield, intel panels, sonar audio |
 | **Naming** | Broadcast → paired registry → GATT → inference → MAC suffix |
-| **Stack** | Python · bleak · WinRT · Three.js HUD · optional TypeScript client |
-| **Privacy** | Runs on localhost; no cloud, no persistence, no tracking |
+| **Intel** | Passive adv archaeology + deep GATT pull + per-device theory chains |
+| **Theories** | **81** narrative → flaw → fix → code chains (incl. security, privacy, legal, ethical) |
+| **Stack** | Python · bleak · WinRT · Leaflet · Three.js HUD · optional TypeScript client |
+| **Privacy** | Runs on localhost; consent-based; `silent_observe` disables GATT connect |
 
 ---
 
@@ -81,21 +83,20 @@ sequenceDiagram
     UI->>API: GET /api/health
     API-->>UI: Bluetooth ready / off
 
-    U->>UI: Start scan
-    UI->>API: POST /api/scan
+    UI->>API: POST /api/scan (auto on boot)
     API->>S: Active scan (continuous)
-    loop Until user clicks Stop
+    loop Forever until server stops
         S-->>API: Advertisement packets
+        API->>API: Hop ingest every 5s
+        API->>API: Background GATT pull every 45s
         UI->>API: Poll /api/devices
-        API-->>UI: Live device list
+        API-->>UI: Live devices + passiveIntel + theories
     end
-    U->>UI: Stop scan
+    U->>UI: SYNC HOPS
     UI->>API: POST /api/stop
-    API->>S: discover() backup 3s
-    API->>N: resolving + GATT pull
+    API->>API: Name merge + GATT pull batch (sweep continues)
     UI->>API: Poll /api/devices
-    API-->>UI: Final names + pulled data
-    UI-->>U: Done
+    API-->>UI: Updated hop graph + exfil tiers
 ```
 
 ---
@@ -210,21 +211,42 @@ flowchart TB
     Intel --> Mission
 ```
 
-### Narrative → flaw → fix
+### Narrative → flaw → fix → code
 
-| Sci-fi theory | Raw flaw | #houseofasher fix |
-|---|---|---|
-| Tactical HUD sees everything | RSSI is fuzzy, not GPS on targets | Distance rings + threat tiers from real signal data |
-| Track emitters through MAC rotation | BLE randomizes MAC while advertising | **Signal fingerprints** hash manufacturer + UUIDs + pattern |
-| Devices “approaching” silently | Single RSSI snapshot lies | **Ghost trails** trend approaching / receding / holding |
-| Perimeter breach alarm | Any strong signal would spam | Scenario presets + optional **watchlist-only** mode |
-| Electronic jamming | Can't detect real jammers cheaply | **Spectrum noise** heuristic when contact count collapses |
-| Triangulate enemy position | Phones don't report GPS to your scanner | **Multi-scanner RSSI fusion** along hop topology only |
-| Domino infinite range | Strangers won't relay for you | Cooperative **hop_reporter.py** nodes only |
-| Download mission intel | Scattered UI state | **EXFIL PACKAGE** zip: devices, dossiers, chrono, hop graph |
-| Command center wall display | Polling is choppy | **SSE war room stream** at `/api/events/stream` |
+Every feature is documented as a **theory chain** in `ble_theory.py`:
 
-### Extended sci-fi theories (`ble_sci_fi.py`)
+```
+narrative → flaw (technical | security | privacy | legal | ethical | operational) → fix → code
+```
+
+| Category | Count | Module | Examples |
+|:---|:---:|:---|:---|
+| **tactical** | 30 | `ble_sci_fi.py`, `ble_tactical.py` | Clone clusters, spoof alerts, ghost trails, cipher exfil |
+| **passive** | 9 | `ble_adv_intel.py`, `ble_device_naming.py` | iBeacon, Eddystone, Apple continuity, Swift Pair |
+| **gatt** | 14 | `ble_gatt_pull.py` | Battery, DIS dossier, HR notify, full GATT atlas |
+| **security** | 20 | `ble-scan-server.py`, `ble_theory.py` | Local bind, hop report auth, XOR cipher limits, serial exposure |
+| **architecture** | 8 | `ble_hop_graph.py`, `ble_distance.py` | Domino graph, RSSI distance, Leaflet rings |
+
+**Live catalog:** `GET /api/theories` — filterable in the HUD by flaw type (security, privacy, legal, etc.)
+
+Each device record includes `theories[]` — applicable chains for that contact (beacons, exfil tier, watchlist, health reads, etc.).
+
+### Security & ethics posture
+
+| Theory | Flaw | Fix in code |
+|:---|:---|:---|
+| Passive adv tracking | Scanning profiles nearby people without consent | Consent-based tool; `silent_observe` scenario |
+| MAC randomization defeat | Fingerprinting undermines BLE privacy design | Use only on owned/authorized assets |
+| GATT unauth read | Peripherals may expose DIS without pairing | `exfilTier`: OPEN / PARTIAL / LOCKED |
+| Serial number harvest | 0x2A25 enables device tracking | Surfaced in intel with disclaimer |
+| Cipher exfil | XOR+SHA256 is not real encryption | Lab/demo only — `/api/extract?format=cipher` |
+| Hop report unauth | `/api/hop/report` accepts unsigned LAN posts | Cooperative nodes only — no auth token yet |
+| Local command post | Binding 0.0.0.0 would expose intel LAN-wide | HTTP server on `127.0.0.1` only |
+| Co-location inference | Co-location ≠ device's home address | `contextNote` — scanner GPS only |
+
+Mission brief (`GET /api/brief`) includes a **Security & ethics** section with live counts (GATT locked, serials read, health reads).
+
+### Core tactical theories
 
 | Theory | Flaw | Fix in code |
 |:---|:---|:---|
@@ -254,14 +276,41 @@ flowchart TB
 | Red/blue team | — | Ally=blue, unknown=red, target=purple |
 | Quantum decoherence | — | UI glitch when interference = critical |
 
-### Mission phases (UI labels)
+### Passive intel (`ble_adv_intel.py`)
+
+Decoded from advertisements **without GATT connect**:
+
+| Signal | Parser | Security note |
+|:---|:---|:---|
+| iBeacon | `parse_ibeacon` | UUID/major/minor in cleartext adv |
+| Eddystone UID/URL/TLM | `parse_eddystone` | URL beacons can deanonymize venues |
+| Apple continuity | `parse_apple_mfg` | Manufacturer bytes leak ecosystem presence |
+| Microsoft Swift Pair | `parse_microsoft_mfg` | Pairing UX confusion surface |
+| Google Fast Pair | `parse_google_fast_pair` | Device class identification |
+
+Shown per device in HUD **INTEL PANEL** as `passiveIntel`.
+
+### GATT exfil (`ble_gatt_pull.py`)
+
+| Exfil tier | Meaning |
+|:---|:---|
+| `PASSIVE_ONLY` | No connect attempted yet |
+| `OPEN` | Readable standard characteristics |
+| `PARTIAL` | Some chars + atlas mapped |
+| `LOCKED` | Connect blocked (typical for unpaired phones) |
+
+Readable characteristics include: device name, appearance, battery, DIS (manufacturer/model/serial/firmware), PnP ID, heart rate (read/notify sample), CSC/RSC/weight/glucose, and full **GATT atlas** (all services/chars).
+
+Background pull: every 45s + on **SYNC HOPS**. Manual: **PULL GATT** per device or `POST /api/pull`.
+
+### Extended sci-fi theories (`ble_sci_fi.py`)
 
 | Phase | HUD label | Meaning |
 |:---|:---|:---|
 | `idle` | STANDBY | Ready |
-| `running` | SWEEP | Continuous scan |
-| `resolving` | DECRYPT | Name merge after ABORT |
-| `pulling` | EXFIL | GATT intelligence pull |
+| `running` | SWEEP | Continuous scan (never auto-stops) |
+| `resolving` | DECRYPT | Name merge after SYNC HOPS |
+| `pulling` | EXFIL | GATT intelligence pull (background) |
 | `completed` | MISSION COMPLETE | Results final |
 | `failed` | SIGNAL LOST | Radio error |
 
@@ -273,23 +322,27 @@ flowchart TB
 | `perimeter` | Aggressive proximity alerts, light pull |
 | `asset_recovery` | Watchlist alerts, deep pull |
 | `silent_observe` | No GATT connect, passive only |
-| `deep_pull` | Maximum GATT exfil after ABORT |
+| `deep_pull` | Maximum GATT exfil on SYNC HOPS |
 
-### Tactical API (new)
+### Tactical API
 
 | Method | Path | Description |
 |:---:|:---|:---|
 | `GET` | `/api/tactical` | Mission state, alerts, relay scores, domino breaches |
 | `GET` | `/api/chrono` | Chrono blackbox events |
-| `GET` | `/api/dossier?address=` | Full intel card for one device |
+| `GET` | `/api/dossier?address=` | Full intel card + applicable theories |
 | `GET` | `/api/extract?format=zip` | Download mission exfil package |
-| `GET` | `/api/extract?format=cipher&password=` | Password-scrambled exfil ZIP |
-| `GET` | `/api/brief` | Plain-text mission after-action brief |
+| `GET` | `/api/extract?format=cipher&password=` | Password-scrambled exfil ZIP (lab-only XOR) |
+| `GET` | `/api/brief` | Plain-text mission after-action brief + security posture |
 | `GET` | `/api/replay` | Time-dilated replay frame buffer |
-| `GET` | `/api/theories` | Full narrative → flaw → fix catalog |
+| `GET` | `/api/theories` | Full 81-chain catalog + live `securitySummary` |
+| `GET` | `/api/location` | Scanner GPS snapshot |
+| `POST` | `/api/location` | Set scanner coords (browser geolocation) |
+| `POST` | `/api/pull` | Manual GATT pull `{ "address": "..." }` |
 | `GET` | `/api/events/stream` | SSE war room event stream |
 | `POST` | `/api/scenario` | Set mission preset `{ "scenario": "perimeter" }` |
 | `POST` | `/api/watchlist` | Target lock `{ "address": "...", "action": "toggle" }` |
+| `POST` | `/api/stop` | SYNC HOPS — hop refresh + GATT batch (sweep continues) |
 
 ---
 
@@ -353,14 +406,20 @@ python hop_reporter.py --node-id pixel-hop --label "Pixel 9" \
 
 ```
 bluetooth-scanning/
-├── ble-scan-server.py      # HTTP server + scan orchestration
-├── tactical_hud.html       # #houseofasher tactical HUD (loaded at runtime)
+├── ble-scan-server.py      # HTTP server + persistent scan + auto GATT pull
+├── tactical_hud.html       # #houseofasher tactical HUD (Leaflet map + intel panels)
+├── ble_theory.py           # Unified 81-chain narrative→flaw→fix→code corpus
 ├── ble_tactical.py         # Chrono, fingerprints, trails, scenarios, exfil
-├── ble_sci_fi.py           # Extended theory engine (21+ narrative→fix modules)
+├── ble_sci_fi.py           # Extended theory engine (clone, spoof, quorum, replay…)
+├── ble_adv_intel.py        # Passive adv archaeology (iBeacon, Eddystone, mfg hints)
+├── ble_gatt_pull.py        # Deep GATT exfil + service atlas + exfil tiers
 ├── ble_hop_graph.py        # Cooperative domino hop graph + relay scores
-├── hop_reporter.py         # Companion scanner CLI (hop node)
+├── ble_location.py         # Scanner GPS + Nominatim reverse geocode
+├── ble_distance.py         # RSSI → distance estimate + proximity zones
+├── ble_enrichment.py       # Merge naming, distance, passive, GATT, theories
 ├── ble_device_naming.py    # Multi-source name resolution
-├── ble_enrichment.py       # Distance, location, tactical merge
+├── ble_paired_windows.py   # Windows paired device registry lookup
+├── hop_reporter.py         # Companion scanner CLI (hop node / listening post)
 ├── bluetooth-client.ts     # TypeScript API client
 ├── requirements.txt
 └── README.md
@@ -372,25 +431,50 @@ bluetooth-scanning/
 
 | Method | Path | Description |
 |:---:|:---|:---|
-| `GET` | `/` | Web dashboard |
+| `GET` | `/` | Tactical HUD |
 | `GET` | `/api/health` | Preflight Bluetooth radio check |
-| `GET` | `/api/devices` | Scan snapshot (`phase`, `devices`, `count`) |
-| `POST` | `/api/scan` | Start continuous scan (503 if Bluetooth off); returns `{ "continuous": true }` |
-| `POST` | `/api/stop` | Stop scan — triggers discover backup, name resolve, and GATT pull |
+| `GET` | `/api/devices` | Full snapshot: devices, hopGraph, tactical, scannerLocation |
+| `POST` | `/api/scan` | Ensure persistent sweep running (503 if Bluetooth off) |
+| `POST` | `/api/stop` | SYNC HOPS — refresh names/hop graph/GATT batch; sweep continues |
+| `POST` | `/api/pull` | Manual GATT pull `{ "address": "AA:BB:CC:DD:EE:FF" }` |
 | `GET` | `/api/hop/graph` | Domino hop graph (nodes, edges, chains) |
 | `POST` | `/api/hop/report` | Companion scanner submits observations |
+| `GET` | `/api/theories` | 81 theory chains + security summary |
 
-### Device object
+### Device object (selected fields)
 
 ```json
 {
   "id": "C0:1C:6A:A4:93:C6",
   "displayName": "Pixel 9",
   "nameSource": "paired",
-  "broadcastName": null,
-  "manufacturer": "Google",
   "rssi": -62,
-  "uuids": ["0000180f-0000-1000-8000-00805f9b34fb"]
+  "distanceLabel": "12 ft",
+  "proximityZone": "near",
+  "exfilTier": "LOCKED",
+  "pullStatus": "failed",
+  "threatTier": "known",
+  "fingerprint": "SIG-A1B2C3D4E5F6",
+  "passiveIntel": {
+    "beacons": [],
+    "ecosystemHints": ["Google Fast Pair"],
+    "manufacturerRecords": [{ "companyName": "Google", "hex": "e000..." }]
+  },
+  "pulledData": { "ok": false, "exfilTier": "LOCKED", "errors": ["..."] },
+  "gattAtlas": [],
+  "intelSummary": [],
+  "theories": [
+    {
+      "id": "adv_tracking",
+      "flawType": "legal",
+      "narrative": "Passive adv tracking",
+      "flaw": "Scanning profiles nearby people without consent",
+      "fix": "Consent-based tool; silent_observe for passive-only",
+      "code": "ble_tactical.SCENARIOS.silent_observe",
+      "chain": "Passive adv tracking → FLAW (legal): ... → FIX: ... → CODE: ..."
+    }
+  ],
+  "sciFi": { "dialect": { "dialect": "WEARABLE" }, "quorum": { "status": "PENDING" } }
 }
 ```
 
@@ -399,9 +483,9 @@ bluetooth-scanning/
 | Phase | Meaning |
 |:---|:---|
 | `idle` | Ready for new scan |
-| `running` | Collecting advertisements (runs until Stop) |
-| `resolving` | Name merge after Stop |
-| `pulling` | GATT data pull after Stop |
+| `running` | Collecting advertisements (continuous) |
+| `resolving` | Name merge after SYNC HOPS |
+| `pulling` | Background GATT pull in progress |
 | `completed` | Results final |
 | `failed` | Bluetooth or scan error |
 
@@ -447,21 +531,25 @@ Get-NetTCPConnection -LocalPort 8765 | ForEach-Object { Stop-Process -Id $_.Owni
 mindmap
   root((Bluetooth Scanning))
     Consent
-      User clicks Start
-      No background scan
-      No device persistence
+      Operator starts sweep
+      silent_observe mode
+      Authorized assets only
     Accuracy
       Multi packet merge
       Paired registry lookup
-      GATT enrichment
+      GATT + passive enrichment
     Clarity
       nameSource badges
-      Phase based status
-      Actionable errors
+      exfilTier labels
+      81 theory chains
+    Security
+      localhost bind
+      flawType catalog
+      ethics in brief
     Local
-      localhost only
-      No external API
-      No telemetry
+      127.0.0.1 only
+      No cloud telemetry
+      Optional Nominatim geocode
 ```
 
 ---
@@ -476,6 +564,6 @@ MIT — see [LICENSE](LICENSE).
 
 **#houseofasher** · [shep95/bluetooth-scanning](https://github.com/shep95/bluetooth-scanning) · [houseofasher/bluetooth_software](https://github.com/houseofasher/bluetooth_software)
 
-Tactical BLE discovery for Windows — honest naming, real radio physics, sci-fi presentation.
+Tactical BLE discovery for Windows — honest naming, real radio physics, 81 narrative→flaw→fix→code chains, sci-fi presentation.
 
 </div>

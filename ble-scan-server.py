@@ -30,11 +30,18 @@ from ble_hop_graph import HOP_GRAPH
 from ble_location import SCANNER_LOCATION, reverse_geocode
 from ble_paired_windows import load_all_paired_names
 from ble_tactical import SCENARIOS, TACTICAL, mission_label
-from ble_sci_fi import SCI_FI, THEORY_CATALOG, generate_mission_brief
+from ble_sci_fi import SCI_FI, generate_mission_brief
+from ble_theory import (
+    GATT_THEORIES as PULL_THEORY_CATALOG,
+    TACTICAL_THEORIES as THEORY_CATALOG,
+    security_summary,
+    theory_snapshot,
+)
 
 PORT = 8765
 DISCOVER_ON_STOP_SEC = 3.0
 HOP_INGEST_INTERVAL = 5.0  # push live devices into domino hop graph while scanning
+AUTO_PULL_INTERVAL = 45.0  # background GATT exfil attempt for strongest unpulled device
 PERSISTENT_SCAN = True  # never halt radio for device-count caps or post-scan phases
 ZERO_RESULT_HINT = (
     "No advertisers yet — sweep is still running. Check Bluetooth ON, Windows Location ON, "
@@ -373,6 +380,32 @@ async def run_persistent_scan() -> None:
     STATE.begin()
     scanner = BleakScanner(detection_callback=detection_callback, scanning_mode="active")
     last_hop = 0.0
+    last_auto_pull = 0.0
+
+    def background_pull_batch(max_devices: int = 2) -> None:
+        snap = STATE.snapshot()
+        ranked = sorted(
+            snap.get("devices", []),
+            key=lambda d: d.get("rssi") if d.get("rssi") is not None else -999,
+            reverse=True,
+        )
+        targets = [d for d in ranked if d.get("pullStatus") in ("pending", "failed")][:max_devices]
+        if not targets and ranked:
+            targets = ranked[:1]
+        for d in targets:
+            addr = d.get("id") or d.get("macAddress")
+            if not addr:
+                continue
+            try:
+                result = pull_device_data_sync(addr)
+                STATE.set_pulled_data(addr, result)
+                TACTICAL.log(
+                    "exfil",
+                    f"GATT ATLAS · {d.get('displayName', addr)} · tier {result.get('exfilTier')}",
+                    {"mac": addr, "tier": result.get("exfilTier")},
+                )
+            except Exception as exc:
+                TACTICAL.log("exfil", f"Pull failed · {addr}: {exc}", {"mac": addr})
 
     try:
         await scanner.start()
@@ -384,11 +417,16 @@ async def run_persistent_scan() -> None:
                 STATE.ingest_hop_live()
                 last_hop = now
 
+            if now - last_auto_pull >= AUTO_PULL_INTERVAL:
+                last_auto_pull = now
+                threading.Thread(target=background_pull_batch, kwargs={"max_devices": 1}, daemon=True).start()
+
             if STATE.sync_flag.is_set():
                 STATE.sync_flag.clear()
                 STATE.apply_resolved_records()
                 STATE.ingest_hop_live()
-                TACTICAL.log("hop", "Hop sync complete — sweep continues")
+                threading.Thread(target=background_pull_batch, kwargs={"max_devices": 3}, daemon=True).start()
+                TACTICAL.log("hop", "Hop sync + GATT exfil queued — sweep continues")
 
             await asyncio.sleep(0.25)
     except BleakBluetoothNotAvailableError as exc:
@@ -522,7 +560,10 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/theories":
-            self._send_json(200, {"theories": THEORY_CATALOG, "sciFi": SCI_FI.snapshot([], HOP_GRAPH.snapshot(), {}, {})})
+            snap = theory_snapshot()
+            devices = STATE.snapshot().get("devices", [])
+            snap["securitySummary"] = security_summary(devices)
+            self._send_json(200, snap)
             return
 
         if path == "/api/brief":

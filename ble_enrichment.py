@@ -4,11 +4,13 @@ from __future__ import annotations
 
 from typing import Any
 
+from ble_adv_intel import build_passive_intel
 from ble_device_naming import DeviceSignals, format_mac, normalize_mac, resolve_name, signals_to_record
 from ble_distance import distance_payload
 from ble_location import ScannerLocation, location_context_for_device
 from ble_paired_windows import lookup_paired_name, name_from_paired_values
 from ble_tactical import TACTICAL
+from ble_theory import theories_for_device
 
 
 def rssi_human(rssi: int | None) -> str:
@@ -95,7 +97,18 @@ def build_device_record(
         record["identityAddress"] = pulled_data["data"]["resolvedAddress"]
         record["identityNote"] = "Identity address resolved after connecting (may differ from random BLE MAC while scanning)."
     record["location"] = location_context_for_device(dist["distanceMeters"], scanner)
+    record["passiveIntel"] = build_passive_intel(signals)
     record["pulledData"] = pulled_data
+    if pulled_data:
+        record["exfilTier"] = pulled_data.get("exfilTier", "UNKNOWN")
+        record["gattAtlas"] = pulled_data.get("gattAtlas", [])
+        record["intelSummary"] = pulled_data.get("intelSummary", [])
+        record["charLabels"] = pulled_data.get("charLabels", {})
+    else:
+        record["exfilTier"] = "PASSIVE_ONLY"
+        record["gattAtlas"] = []
+        record["intelSummary"] = []
+        record["charLabels"] = {}
     if pulled_data is None:
         record["pullStatus"] = "pending"
     elif pulled_data.get("ok"):
@@ -107,6 +120,7 @@ def build_device_record(
 
     tactical = TACTICAL.on_device_update(signals, record, hop_depth, hop_graph, paired_names)
     record.update(tactical)
+    record["theories"] = theories_for_device(record)
     if hop_graph:
         tri = TACTICAL.build_dossier(record, hop_graph).get("triangulation")
         if tri:

@@ -120,6 +120,43 @@
     .map-legend .sc::before { color: #39ff14; }
     .map-legend .hop::before { color: #00e5ff; }
     .map-legend .dev::before { color: #ffb020; }
+    .exfil-tier {
+      font-size: 0.62rem; text-transform: uppercase; padding: 0.12rem 0.4rem;
+      border-radius: 3px; margin-left: 0.35rem; font-weight: 700; letter-spacing: 0.04em;
+    }
+    .exfil-tier.open { background: #0d2818; color: var(--green); border: 1px solid #1a4a2a; }
+    .exfil-tier.partial { background: #1a2030; color: var(--cyan); border: 1px solid #2a4060; }
+    .exfil-tier.locked { background: #2a1018; color: var(--red); border: 1px solid #4a1a2a; }
+    .exfil-tier.passive { background: #2a2010; color: var(--amber); border: 1px solid #4a3010; }
+    .exfil-tier.unknown { background: #1a1a20; color: var(--muted); border: 1px solid var(--border); }
+    .intel-block {
+      margin-top: 0.45rem; padding: 0.45rem 0.55rem; background: #080c12;
+      border-radius: 4px; border: 1px solid var(--border); font-size: 0.72rem;
+    }
+    .intel-block h4 {
+      margin: 0 0 0.35rem; font-size: 0.68rem; text-transform: uppercase;
+      letter-spacing: 0.08em; color: var(--cyan); font-weight: 600;
+    }
+    .intel-row { padding: 0.15rem 0; color: var(--muted); }
+    .intel-row strong { color: var(--text); font-weight: 500; }
+    .atlas-svc { margin: 0.25rem 0; padding-left: 0.5rem; border-left: 2px solid #1e2a3a; }
+    .pull-status { font-size: 0.68rem; color: var(--muted); margin-left: 0.35rem; }
+    .device-actions { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-top: 0.35rem; }
+    .theory-section { margin-bottom: 0.75rem; }
+    .theory-section h3 { margin: 0 0 0.35rem; font-size: 0.72rem; color: var(--green); text-transform: uppercase; }
+    .flaw-type {
+      font-size: 0.58rem; text-transform: uppercase; padding: 0.08rem 0.3rem;
+      border-radius: 3px; margin-left: 0.25rem; font-weight: 700;
+    }
+    .flaw-type.security { background: #2a1018; color: var(--red); }
+    .flaw-type.privacy { background: #201a30; color: #b366ff; }
+    .flaw-type.legal { background: #2a2010; color: var(--amber); }
+    .flaw-type.ethical { background: #1a2030; color: var(--cyan); }
+    .flaw-type.technical { background: #1a1a20; color: var(--muted); }
+    .flaw-type.operational { background: #0d2818; color: var(--green); }
+    .theory-code { color: var(--cyan); font-size: 0.68rem; display: block; margin-top: 0.15rem; }
+    .theory-chain { font-size: 0.7rem; color: var(--muted); margin: 0.25rem 0; padding: 0.35rem; background: #080c12; border-radius: 4px; }
+    #theoryFilter { width: 100%; margin-bottom: 0.5rem; }
   </style>
 </head>
 <body>
@@ -192,7 +229,17 @@
       </div>
       <div class="panel">
         <h2>Theory catalog</h2>
+        <select id="theoryFilter">
+          <option value="all">All flaw types</option>
+          <option value="security">Security</option>
+          <option value="privacy">Privacy</option>
+          <option value="legal">Legal</option>
+          <option value="ethical">Ethical</option>
+          <option value="technical">Technical</option>
+          <option value="operational">Operational</option>
+        </select>
         <div id="theoriesPanel" class="meta"></div>
+        <div id="securitySummary" class="meta" style="margin-top:0.5rem;"></div>
       </div>
       <div class="panel">
         <h2>Chrono blackbox</h2>
@@ -250,11 +297,97 @@
     const replaySlider = document.getElementById("replaySlider");
     const replayPanel = document.getElementById("replayPanel");
     const theoriesPanel = document.getElementById("theoriesPanel");
+    const securitySummaryEl = document.getElementById("securitySummary");
+    const theoryFilterEl = document.getElementById("theoryFilter");
     const sseStatus = document.getElementById("sseStatus");
+    let theoryCache = null;
     let threatRotate = 0;
 
     const TIER_LABELS = { friendly: "ALLY", known: "KNOWN", unknown: "UNKNOWN", priority: "TARGET LOCK", breach: "DEEP BREACH" };
     const TREND_LABELS = { approaching: "↗ APPROACHING", receding: "↘ RECEDING", static: "● HOLDING", unknown: "?" };
+    const EXFIL_LABELS = {
+      OPEN: "GATT OPEN", PARTIAL: "GATT PARTIAL", LOCKED: "GATT LOCKED",
+      PASSIVE_ONLY: "PASSIVE ONLY", UNKNOWN: "UNKNOWN",
+    };
+
+    function exfilTierClass(tier) {
+      const map = { OPEN: "open", PARTIAL: "partial", LOCKED: "locked", PASSIVE_ONLY: "passive", UNKNOWN: "unknown" };
+      return map[tier] || "unknown";
+    }
+
+    function exfilTierBadge(tier) {
+      const t = tier || "UNKNOWN";
+      return `<span class="exfil-tier ${exfilTierClass(t)}">${escapeHtml(EXFIL_LABELS[t] || t)}</span>`;
+    }
+
+    function renderPassiveIntel(pi) {
+      if (!pi) return "";
+      const beacons = (pi.beacons || []).map((b) =>
+        `<div class="intel-row"><strong>${escapeHtml(b.label || b.type)}</strong> ${escapeHtml(b.uuid || b.raw || "")}</div>`
+      ).join("");
+      const hints = (pi.ecosystemHints || []).map((h) =>
+        `<span class="sci-tag">${escapeHtml(h)}</span>`
+      ).join("");
+      const mfg = (pi.manufacturerRecords || []).map((m) =>
+        `<div class="intel-row"><strong>${escapeHtml(m.companyName)}</strong> <code>${escapeHtml(m.hex || "")}</code></div>`
+      ).join("");
+      const svcs = (pi.serviceLabels || []).slice(0, 8).map((s) =>
+        `<span class="sci-tag">${escapeHtml(s)}</span>`
+      ).join("");
+      return `<div class="intel-block">
+        <h4>Passive advertisement intel</h4>
+        ${pi.broadcastName ? `<div class="intel-row"><strong>Adv name:</strong> ${escapeHtml(pi.broadcastName)}</div>` : ""}
+        ${pi.connectableGuess ? `<div class="intel-row"><strong>Connectable:</strong> ${escapeHtml(pi.connectableGuess)}</div>` : ""}
+        ${pi.txPower != null ? `<div class="intel-row"><strong>TX power:</strong> ${pi.txPower} dBm</div>` : ""}
+        ${hints ? `<div class="intel-row">${hints}</div>` : ""}
+        ${beacons || "<div class='intel-row'>No beacon frames decoded</div>"}
+        ${mfg || ""}
+        ${svcs ? `<div class="intel-row" style="margin-top:0.25rem">${svcs}</div>` : ""}
+      </div>`;
+    }
+
+    function renderGattFields(d) {
+      const pulled = d.pulledData;
+      const data = pulled?.data || {};
+      const labels = d.charLabels || {};
+      const keys = Object.keys(data).filter((k) => data[k] != null && data[k] !== "");
+      if (!keys.length && d.pullStatus === "pending") {
+        return `<div class="intel-block"><h4>GATT exfil</h4><div class="intel-row">Queued for background pull…</div></div>`;
+      }
+      if (!keys.length) {
+        const errs = (pulled?.errors || []).slice(0, 3).map(escapeHtml).join("; ");
+        return `<div class="intel-block"><h4>GATT exfil</h4><div class="intel-row">${errs || "No readable characteristics — device may block unknown PCs."}</div></div>`;
+      }
+      const rows = keys.map((k) => {
+        const label = labels[k] || k;
+        return `<div class="intel-row"><strong>${escapeHtml(label)}:</strong> ${escapeHtml(data[k])}</div>`;
+      }).join("");
+      const summary = (d.intelSummary || []).map((line) =>
+        `<div class="intel-row">${escapeHtml(line)}</div>`
+      ).join("");
+      return `<div class="intel-block">
+        <h4>GATT exfil · ${escapeHtml(pulled?.exfilTier || d.exfilTier || "?")}</h4>
+        ${summary || rows}
+        ${summary ? `<div style="margin-top:0.35rem">${rows}</div>` : ""}
+      </div>`;
+    }
+
+    function renderGattAtlas(atlas) {
+      if (!atlas || !atlas.length) return "";
+      const svcs = atlas.slice(0, 12).map((svc) => {
+        const chars = (svc.characteristics || []).slice(0, 8).map((c) => {
+          const val = c.valueText || c.valueHex || c.readError || (c.properties || []).join(",");
+          return `<div class="intel-row" style="padding-left:0.5rem">· ${escapeHtml(c.key || c.uuid)} — ${escapeHtml(String(val).slice(0, 64))}</div>`;
+        }).join("");
+        return `<div class="atlas-svc"><strong>${escapeHtml(svc.key || svc.uuid)}</strong>${chars}</div>`;
+      }).join("");
+      const more = atlas.length > 12 ? `<div class="intel-row">+ ${atlas.length - 12} more services</div>` : "";
+      return `<div class="intel-block"><h4>GATT atlas (${atlas.length} services)</h4>${svcs}${more}</div>`;
+    }
+
+    function renderDeviceIntel(d) {
+      return renderPassiveIntel(d.passiveIntel) + renderGattFields(d) + renderGattAtlas(d.gattAtlas) + renderDeviceTheories(d.theories);
+    }
 
     function escapeHtml(s) {
       return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
@@ -511,6 +644,7 @@
     function renderSciFi(sci) {
       if (!sci) return;
       const lines = [
+        `Theory corpus: ${sci.theoryCount ?? "?"} narrative→flaw→fix→code chains`,
         `Quorum confirmed: ${sci.quorumConfirmed ?? 0}`,
         `Clone clusters: ${(sci.cloneClusters || []).length}`,
         `Spoof alerts: ${(sci.spoofAlerts || []).length}`,
@@ -541,6 +675,23 @@
         : "No frames yet.";
     }
 
+    function renderIntelOverview(devices) {
+      if (!devices.length) return;
+      const beacons = devices.reduce((n, d) => n + ((d.passiveIntel?.beacons || []).length), 0);
+      const hints = new Set();
+      devices.forEach((d) => (d.passiveIntel?.ecosystemHints || []).forEach((h) => hints.add(h)));
+      const pulled = devices.filter((d) => d.pullStatus === "ok").length;
+      const locked = devices.filter((d) => d.exfilTier === "LOCKED").length;
+      const partial = devices.filter((d) => d.exfilTier === "PARTIAL" || d.exfilTier === "OPEN").length;
+      const passiveOnly = devices.filter((d) => d.exfilTier === "PASSIVE_ONLY").length;
+      sciFiPanel.innerHTML +=
+        `<div style="margin-top:0.5rem;padding-top:0.5rem;border-top:1px solid var(--border)">
+          <strong>Passive / GATT intel sweep</strong><br>
+          Beacons decoded: ${beacons} · Ecosystem hints: ${hints.size}<br>
+          GATT pulled: ${pulled} · open/partial: ${partial} · locked: ${locked} · passive-only: ${passiveOnly}
+        </div>`;
+    }
+
     replaySlider.addEventListener("input", async () => {
       const res = await fetch("/api/replay");
       const data = await res.json();
@@ -548,13 +699,65 @@
       if (f) replayPanel.textContent = `Replay @ ${new Date(f.ts * 1000).toLocaleTimeString()} · ${f.count} contacts · hop ${f.maxHopDepth}`;
     });
 
-    async function loadTheories() {
-      const res = await fetch("/api/theories");
-      const data = await res.json();
-      theoriesPanel.innerHTML = (data.theories || []).slice(0, 10).map((t) =>
-        `<div style="margin-bottom:0.4rem"><strong>${escapeHtml(t.id)}</strong> ${escapeHtml(t.narrative)}<br>
-        <span class="meta">Flaw: ${escapeHtml(t.flaw)} → Fix: ${escapeHtml(t.fix)}</span></div>`
+    function flawTypeBadge(ft) {
+      const t = ft || "technical";
+      return `<span class="flaw-type ${escapeHtml(t)}">${escapeHtml(t)}</span>`;
+    }
+
+    function renderTheoryCard(t) {
+      return `<div style="margin-bottom:0.45rem">
+        <strong>${escapeHtml(t.id)}</strong>${flawTypeBadge(t.flawType)}
+        <div>${escapeHtml(t.narrative)}</div>
+        <span class="meta">Flaw: ${escapeHtml(t.flaw)}</span><br>
+        <span class="meta">Fix: ${escapeHtml(t.fix)}</span>
+        <code class="theory-code">${escapeHtml(t.code || "")}</code>
+      </div>`;
+    }
+
+    function renderTheorySection(title, theories, filter) {
+      const list = (theories || []).filter((t) => filter === "all" || t.flawType === filter);
+      if (!list.length) return "";
+      return `<div class="theory-section"><h3>${escapeHtml(title)} (${list.length})</h3>` +
+        list.map(renderTheoryCard).join("") + "</div>";
+    }
+
+    function renderTheoriesPanel(data, filter) {
+      if (!data) return;
+      const f = filter || "all";
+      theoriesPanel.innerHTML =
+        `<div class="meta" style="margin-bottom:0.5rem">${escapeHtml(data.pattern || "")} · ${data.total || 0} chains</div>` +
+        renderTheorySection("Security flaws", data.security, f) +
+        renderTheorySection("Tactical sci-fi", data.tactical, f) +
+        renderTheorySection("Passive intel", data.passive, f) +
+        renderTheorySection("GATT exfil", data.gatt, f) +
+        renderTheorySection("Architecture", data.architecture, f) ||
+        "<div class='meta'>No theories match filter.</div>";
+
+      const sec = data.securitySummary || {};
+      securitySummaryEl.innerHTML = sec.devicesTracked != null
+        ? `<strong>Live security posture</strong><br>
+           Tracked: ${sec.devicesTracked} · GATT locked: ${sec.gattLocked ?? 0} ·
+           Serials: ${sec.serialsExposed ?? 0} · Health reads: ${sec.healthReads ?? 0}<br>
+           <span class="meta">${escapeHtml(sec.operatorNote || "")}</span>`
+        : "";
+    }
+
+    function renderDeviceTheories(theories) {
+      if (!theories || !theories.length) return "";
+      const cards = theories.slice(0, 8).map((t) =>
+        `<div class="theory-chain"><strong>${escapeHtml(t.id)}</strong>${flawTypeBadge(t.flawType)}
+        ${escapeHtml(t.chain || `${t.narrative} → ${t.fix}`)}</div>`
       ).join("");
+      const more = theories.length > 8 ? `<div class="meta">+ ${theories.length - 8} more theory chains</div>` : "";
+      return `<div class="intel-block"><h4>Applicable theories (${theories.length})</h4>${cards}${more}</div>`;
+    }
+
+    async function loadTheories(filter) {
+      if (!theoryCache) {
+        const res = await fetch("/api/theories");
+        theoryCache = await res.json();
+      }
+      renderTheoriesPanel(theoryCache, filter || theoryFilterEl?.value || "all");
     }
 
     function renderThreatBoard(devices) {
@@ -565,7 +768,8 @@
       threatBoard.innerHTML = top.map((d, i) =>
         `<div style="padding:0.3rem 0"><strong>#${i + 1} ${escapeHtml(d.displayName || d.id)}</strong>
         <span class="sci-tag">${escapeHtml(d.threatTier || "?")}</span>
-        <span class="meta">RSSI ${d.rssi ?? "?"} · ${escapeHtml((d.sciFi?.quorum?.status) || "?")}</span></div>`
+        ${exfilTierBadge(d.exfilTier)}
+        <span class="meta">RSSI ${d.rssi ?? "?"} · ${escapeHtml((d.sciFi?.quorum?.status) || "?")} · pull ${escapeHtml(d.pullStatus || "?")}</span></div>`
       ).join("");
     }
 
@@ -581,7 +785,9 @@
         const trend = TREND_LABELS[d.movementTrend] || "";
         const fp = d.fingerprint ? `<span class="meta">Signature: <code>${escapeHtml(d.fingerprint)}</code></span>` : "";
         const watchBtn = `<button type="button" class="watchBtn" data-id="${escapeHtml(d.id)}">${d.onWatchlist ? "★ LOCKED" : "☆ LOCK"}</button>`;
+        const pullBtn = `<button type="button" class="pullBtn" data-id="${escapeHtml(d.id)}">PULL GATT</button>`;
         const dossierId = "dossier-" + escapeHtml(d.id).replace(/:/g, "");
+        const intelId = "intel-" + escapeHtml(d.id).replace(/:/g, "");
         const teamClass = !redBlueToggle.checked ? "" :
           d.threatTier === "friendly" || d.threatTier === "known" ? " team-blue" :
           d.onWatchlist ? " team-purple" : " team-red";
@@ -592,17 +798,25 @@
           sci.pursuit?.bearing,
           sci.geofence?.breach ? "BREACH" : null,
         ].filter(Boolean).map((t) => `<span class="sci-tag">${escapeHtml(t)}</span>`).join("");
+        const pullLabel = { pending: "queued", ok: "pulled", failed: "blocked", empty: "empty" }[d.pullStatus] || d.pullStatus;
         return `<li class="device${pri}${teamClass}" data-id="${escapeHtml(d.id)}">
           ${ring}
           <strong>${escapeHtml(d.displayName || d.name || "Unknown")}
             <span class="tier ${escapeHtml(tier)}">${TIER_LABELS[tier] || tier}</span>
+            ${exfilTierBadge(d.exfilTier)}
+            <span class="pull-status">pull: ${escapeHtml(pullLabel || "?")}</span>
           </strong>
           <span class="meta">~${escapeHtml(d.distanceLabel || "?")} · RSSI ${d.rssi ?? "?"} dBm · ${trend}</span>
           <div>${tags}</div>
-          <span class="meta">MAC <code>${escapeHtml(d.macAddress || d.id)}</code></span>
+          <span class="meta">MAC <code>${escapeHtml(d.macAddress || d.id)}</code>${d.identityAddress ? ` · identity <code>${escapeHtml(d.identityAddress)}</code>` : ""}</span>
           ${fp}
-          ${watchBtn}
-          <button type="button" class="dossierBtn" data-target="${dossierId}">INTEL DOSSIER</button>
+          <div class="device-actions">
+            ${watchBtn}
+            ${pullBtn}
+            <button type="button" class="dossierBtn" data-target="${dossierId}">TACTICAL DOSSIER</button>
+            <button type="button" class="intelToggleBtn" data-target="${intelId}">INTEL PANEL</button>
+          </div>
+          <div class="intel-block" id="${intelId}" style="display:none">${renderDeviceIntel(d)}</div>
           <div class="dossier" id="${dossierId}">Loading…</div>
         </li>`;
       }).join("");
@@ -618,6 +832,39 @@
           await poll();
         });
       });
+      document.querySelectorAll(".pullBtn").forEach((btn) => {
+        btn.addEventListener("click", async (e) => {
+          e.stopPropagation();
+          btn.disabled = true;
+          btn.textContent = "PULLING…";
+          try {
+            const res = await fetch("/api/pull", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ address: btn.dataset.id }),
+            });
+            const data = await res.json();
+            if (!res.ok) showToast(data.error || "Pull failed");
+            else showToast(`GATT pull · tier ${data.exfilTier || "?"}`);
+            await poll();
+          } catch (_) {
+            showToast("Pull request failed");
+          } finally {
+            btn.disabled = false;
+            btn.textContent = "PULL GATT";
+          }
+        });
+      });
+      document.querySelectorAll(".intelToggleBtn").forEach((btn) => {
+        btn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          const box = document.getElementById(btn.dataset.target);
+          if (!box) return;
+          const open = box.style.display !== "none";
+          box.style.display = open ? "none" : "block";
+          btn.textContent = open ? "INTEL PANEL" : "HIDE INTEL";
+        });
+      });
       document.querySelectorAll(".dossierBtn").forEach((btn) => {
         btn.addEventListener("click", async (e) => {
           e.stopPropagation();
@@ -627,7 +874,18 @@
           if (li.classList.toggle("open") && box.textContent === "Loading…") {
             const res = await fetch("/api/dossier?address=" + encodeURIComponent(id));
             const dossier = await res.json();
-            box.innerHTML = `<pre style="white-space:pre-wrap;margin:0;">${escapeHtml(JSON.stringify(dossier, null, 2))}</pre>`;
+            const passive = dossier.passiveIntel ? renderPassiveIntel(dossier.passiveIntel) : "";
+            const gatt = renderGattFields({
+              pulledData: dossier.pulledIntel,
+              charLabels: dossier.charLabels,
+              intelSummary: dossier.intelSummary,
+              exfilTier: dossier.exfilTier,
+              pullStatus: dossier.pullStatus,
+            });
+            const atlas = renderGattAtlas(dossier.gattAtlas);
+            const th = renderDeviceTheories(dossier.theories);
+            box.innerHTML = passive + gatt + atlas + th +
+              `<pre style="white-space:pre-wrap;margin:0.5rem 0 0;font-size:0.68rem;">${escapeHtml(JSON.stringify(dossier, null, 2))}</pre>`;
           }
         });
       });
@@ -637,7 +895,17 @@
       const tac = data.tactical;
       renderTactical(tac);
       renderDevices(data.devices ?? []);
+      renderIntelOverview(data.devices ?? []);
       renderThreatBoard(data.devices ?? []);
+      if (theoryCache) {
+        theoryCache.securitySummary = theoryCache.securitySummary || {};
+        const devs = data.devices ?? [];
+        theoryCache.securitySummary.devicesTracked = devs.length;
+        theoryCache.securitySummary.gattLocked = devs.filter((d) => d.exfilTier === "LOCKED").length;
+        theoryCache.securitySummary.serialsExposed = devs.filter((d) => d.pulledData?.data?.serialNumber).length;
+        theoryCache.securitySummary.healthReads = devs.filter((d) => d.pulledData?.data?.heartRateBpm != null).length;
+        renderTheoriesPanel(theoryCache, theoryFilterEl?.value || "all");
+      }
       updateTacticalMap(data);
       updateBattlefield(data.hopGraph);
       hopStats.textContent = data.hopGraph
@@ -842,6 +1110,7 @@
     }
     loadScenarios();
     loadTheories();
+    theoryFilterEl?.addEventListener("change", () => loadTheories(theoryFilterEl.value));
     bootSweep();
     connectSSE();
   </script>

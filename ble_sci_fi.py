@@ -13,31 +13,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ble_device_naming import DeviceSignals, format_mac, normalize_mac, service_uuid_key
-
-# Narrative catalog for README / HUD tooltips
-THEORY_CATALOG: list[dict[str, str]] = [
-    {"id": "clone", "narrative": "Spot cloned emitters across random MACs", "flaw": "MAC randomization is intentional", "fix": "Fingerprint + co-appearance clustering"},
-    {"id": "spoof", "narrative": "Detect name impersonation", "flaw": "Generic BLE names collide", "fix": "Watchlist name vs fingerprint mismatch alert"},
-    {"id": "resurrection", "narrative": "Track devices that die and return", "flaw": "Idle devices stop advertising", "fix": "SIGNAL LOST / RESURRECTED chrono events"},
-    {"id": "dialect", "narrative": "Classify advertisement accent", "flaw": "No single standard payload", "fix": "UUID + manufacturer rule labels"},
-    {"id": "pursuit", "narrative": "Predict target heading", "flaw": "RSSI is noisy indoors", "fix": "Velocity vector with confidence band"},
-    {"id": "geofence", "narrative": "Digital perimeter breach", "flaw": "No target GPS", "fix": "Scanner-zone + RSSI containment"},
-    {"id": "shadow", "narrative": "Follow target through hop relay", "flaw": "Need cooperative nodes", "fix": "Fingerprint path across hop scanners"},
-    {"id": "echo", "narrative": "Sonar-like ranging", "flaw": "BLE is not sonar", "fix": "Multi-node RSSI delta trend"},
-    {"id": "quorum", "narrative": "Three scanners confirm contact", "flaw": "One radio can lie", "fix": "N-node mesh quorum promotion"},
-    {"id": "custody", "narrative": "Scanner handoff chain", "flaw": "No GPS on targets", "fix": "Last-heard-by scanner custody log"},
-    {"id": "deaddrop", "narrative": "Fixed listening posts", "flaw": "Need deployed hardware", "fix": "hop_reporter --listening-post flag"},
-    {"id": "replay", "narrative": "Rewind the battlefield", "flaw": "Live view is fleeting", "fix": "Time-series replay buffer"},
-    {"id": "protocol", "narrative": "Passive protocol fingerprint", "flaw": "Limited without connect", "fix": "Deep adv UUID/manufacturer parse"},
-    {"id": "cohort", "narrative": "Devices that travel together", "flaw": "Co-location ≠ relationship", "fix": "Co-occurrence cluster matrix"},
-    {"id": "battery", "narrative": "Battery drain oracle", "flaw": "Most devices hide battery", "fix": "GATT battery or adv cadence inference"},
-    {"id": "cipher", "narrative": "Encrypted exfil channel", "flaw": "Plain ZIP leaks MACs", "fix": "Password-scrambled export blob"},
-    {"id": "tomography", "narrative": "Through-wall heat grid", "flaw": "Not real X-ray", "fix": "Multi-scanner RSSI zone map"},
-    {"id": "mind", "narrative": "Read device capabilities", "flaw": "Can't read thoughts", "fix": "GATT + UUID capability map"},
-    {"id": "worm", "narrative": "Domino infection spread", "flaw": "Only your nodes relay", "fix": "Hop depth timeline visualization"},
-    {"id": "anomaly", "narrative": "Temporal hop inconsistency", "flaw": "Graph can reorder", "fix": "Impossible depth jump flag"},
-    {"id": "brief", "narrative": "Auto mission after-action report", "flaw": "Raw JSON is unreadable", "fix": "Template intel brief generator"},
-]
+from ble_theory import TACTICAL_THEORIES as THEORY_CATALOG, ALL_THEORIES, append_theory_brief
 
 REPLAY_MAX = 120
 RESURRECT_GAP_SEC = 45.0
@@ -299,6 +275,7 @@ def generate_mission_brief(snapshot: dict[str, Any]) -> str:
     lines.extend(["", "## Recent chrono", ""])
     for e in (tac.get("chrono") or [])[-8:]:
         lines.append(f"- [{e.get('type')}] {e.get('message')}")
+    append_theory_brief(lines, snapshot.get("devices") or [])
     lines.append("")
     lines.append("_Generated from live BLE sweep — MACs are hardware IDs, not street addresses._")
     return "\n".join(lines)
@@ -505,7 +482,8 @@ class SciFiEngine:
             "replayFrames": list(self.replay_buffer)[-30:],
             "quorumConfirmed": quorum_confirmed,
             "listeningPosts": list(self.listening_posts),
-            "narrativeNote": "Sci-fi labels map to honest BLE limits — see theories[] for flaw/fix per feature.",
+            "narrativeNote": "Sci-fi labels map to honest BLE limits — see /api/theories for narrative→flaw→fix→code.",
+            "theoryCount": len(ALL_THEORIES),
         }
 
 
