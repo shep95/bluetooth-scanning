@@ -41,6 +41,7 @@ from ble_theory import (
     theory_snapshot,
 )
 from ble_screen_relay import recommend_relay_path, screen_relay_snapshot
+from ble_wifi_pose import posesense_snapshot
 from ble_frame_store import FRAME_STORE, lan_ip, relay_urls
 
 PORT = 8765
@@ -630,6 +631,19 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(200, payload)
             return
 
+        if path == "/api/wifi/pose":
+            qs = parse_qs(urlparse(self.path).query)
+            address = (qs.get("address") or [""])[0]
+            device = None
+            snap = STATE.snapshot()
+            if address:
+                device = next(
+                    (d for d in snap["devices"] if format_mac(d.get("id", "")) == format_mac(address)),
+                    None,
+                )
+            self._send_json(200, posesense_snapshot(device, snap.get("hopGraph")))
+            return
+
         if path == "/api/brief":
             snap = STATE.snapshot()
             brief = generate_mission_brief(snap)
@@ -758,6 +772,21 @@ class Handler(BaseHTTPRequestHandler):
                 )
             code = 200 if result.get("ok") else 404
             self._send_json(code, result)
+            return
+
+        if path == "/api/wifi/pose":
+            payload = self._read_json()
+            TACTICAL.log(
+                "pose",
+                f"POSE INGEST · {payload.get('subjectLabel', 'track')} · spec accept",
+                {"nodeId": payload.get("nodeId"), "keys": len(payload.get("keypoints") or [])},
+            )
+            self._send_json(200, {
+                "ok": True,
+                "accepted": True,
+                "note": "CSI pose ingest spec — HUD overlay planned; BLE fusion via recommend_pose_fusion",
+                "payload": payload,
+            })
             return
 
         if path == "/api/screen/session":

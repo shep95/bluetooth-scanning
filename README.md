@@ -28,7 +28,7 @@
 | **HUD** | Mission phases, chrono blackbox, Leaflet map, 3D hop battlefield, intel panels, sonar audio |
 | **Naming** | Broadcast → paired registry → GATT → inference → MAC suffix |
 | **Intel** | Passive adv archaeology + deep GATT pull + per-device theory chains |
-| **Theories** | **101** narrative → flaw → fix → code chains (incl. screen relay + security) |
+| **Theories** | **111** narrative → flaw → fix → code chains (incl. PoseSense WiFi CSI + security) |
 | **Stack** | Python · bleak · WinRT · Leaflet · Three.js HUD · optional TypeScript client |
 | **Privacy** | Runs on localhost; consent-based; `silent_observe` disables GATT connect |
 
@@ -366,7 +366,9 @@ Background pull: every 45s + on **SYNC HOPS**. Manual: **PULL GATT** per device 
 | `GET` | `/api/extract?format=cipher&password=` | Password-scrambled exfil ZIP (lab-only XOR) |
 | `GET` | `/api/brief` | Plain-text mission after-action brief + security posture |
 | `GET` | `/api/replay` | Time-dilated replay frame buffer |
-| `GET` | `/api/theories` | Full 101-chain catalog + live `securitySummary` |
+| `GET` | `/api/wifi/pose` | PoseSense catalog + CMU WiFi CSI fusion spec |
+| `POST` | `/api/wifi/pose` | CSI pose keyframe ingest (spec accept) |
+| `GET` | `/api/theories` | Full 111-chain catalog + live `securitySummary` |
 | `GET` | `/api/location` | Scanner GPS snapshot |
 | `POST` | `/api/location` | Set scanner coords (browser geolocation) |
 | `POST` | `/api/pull` | Manual GATT pull `{ "address": "..." }` |
@@ -472,7 +474,8 @@ bluetooth-scanning/
 ├── ble_frame_store.py      # JPEG frame ingest + relay sessions
 ├── screen_relay.html       # Sender page — START SHARE → POST frames
 ├── ble_screen_relay.py     # Screen mirror theories (scrcpy, AirPlay, WebRTC, HDMI…)
-├── ble_theory.py           # Unified 101-chain narrative→flaw→fix→code corpus
+├── ble_wifi_pose.py        # PoseSense — CMU WiFi CSI pose theories + BLE fusion spec
+├── ble_theory.py           # Unified 111-chain narrative→flaw→fix→code corpus
 ├── ble_tactical.py         # Chrono, fingerprints, trails, scenarios, exfil
 ├── ble_sci_fi.py           # Extended theory engine (clone, spoof, quorum, replay…)
 ├── ble_adv_intel.py        # Passive adv archaeology (iBeacon, Eddystone, mfg hints)
@@ -504,7 +507,7 @@ bluetooth-scanning/
 | `POST` | `/api/pull` | Manual GATT pull `{ "address": "AA:BB:CC:DD:EE:FF" }` |
 | `GET` | `/api/hop/graph` | Domino hop graph (nodes, edges, chains) |
 | `POST` | `/api/hop/report` | Companion scanner submits observations |
-| `GET` | `/api/theories` | 101 theory chains + security summary |
+| `GET` | `/api/theories` | 111 theory chains + security summary |
 
 ### Device object (selected fields)
 
@@ -606,7 +609,7 @@ mindmap
     Clarity
       nameSource badges
       exfilTier labels
-      101 theory chains
+      111 theory chains
     Security
       localhost bind
       flawType catalog
@@ -629,6 +632,6 @@ MIT — see [LICENSE](LICENSE).
 
 **#houseofasher** · [shep95/bluetooth-scanning](https://github.com/shep95/bluetooth-scanning) · [houseofasher/bluetooth_software](https://github.com/houseofasher/bluetooth_software)
 
-Tactical BLE discovery for Windows — honest naming, real radio physics, 101 narrative→flaw→fix→code chains, sci-fi presentation.
+Tactical BLE discovery for Windows — honest naming, real radio physics, 111 narrative→flaw→fix→code chains, sci-fi presentation.
 
 </div>

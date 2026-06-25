@@ -14,9 +14,10 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from ble_screen_relay import SCREEN_RELAY_THEORIES, recommend_relay_path
+from ble_wifi_pose import WIFI_POSE_THEORIES, posesense_snapshot
 
 FlawType = Literal["technical", "security", "privacy", "legal", "operational", "ethical"]
-Category = Literal["tactical", "passive", "gatt", "security", "privacy", "architecture", "operational", "screen_relay"]
+Category = Literal["tactical", "passive", "gatt", "security", "privacy", "architecture", "operational", "screen_relay", "wifi_pose"]
 
 # Tactical sci-fi theories (ble_sci_fi.py)
 TACTICAL_THEORIES: list[dict[str, str]] = [
@@ -124,6 +125,7 @@ ALL_THEORIES: list[dict[str, str]] = (
     + SECURITY_THEORIES
     + ARCHITECTURE_THEORIES
     + SCREEN_RELAY_THEORIES
+    + WIFI_POSE_THEORIES
 )
 
 THEORY_BY_ID: dict[str, dict[str, str]] = {t["id"]: t for t in ALL_THEORIES}
@@ -168,6 +170,7 @@ def theory_snapshot() -> dict[str, Any]:
         "security": SECURITY_THEORIES,
         "architecture": ARCHITECTURE_THEORIES,
         "screenRelay": SCREEN_RELAY_THEORIES,
+        "wifiPose": WIFI_POSE_THEORIES,
         "all": ALL_THEORIES,
         "screenRelayNote": "BLE finds devices; Wi‑Fi/USB/HDMI/AirPlay/scrcpy show screens — always with user consent.",
         "note": "Sci-fi labels map to honest BLE limits. Security flaws include privacy, legal, and ethical classes.",
@@ -242,6 +245,8 @@ def theories_for_device(record: dict[str, Any]) -> list[dict[str, str]]:
         ids.append("quorum")
     if (sci.get("geofence") or {}).get("breach"):
         ids.append("geofence")
+    if record.get("movementTrend") in ("approaching", "receding"):
+        ids.extend(["posesense_vision", "ble_rssi_proxy", "identity_pose_fusion"])
 
     seen: set[str] = set()
     out: list[dict[str, str]] = []
