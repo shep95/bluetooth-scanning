@@ -1,15 +1,24 @@
 {
   "name": "bluetooth-scanning",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "private": true,
-  "description": "#houseofasher BLE tactical HUD — TypeScript client bundles",
+  "type": "module",
+  "description": "#houseofasher tactical BLE HUD — full TypeScript stack",
   "scripts": {
-    "gen:hud": "node scripts/gen-tactical-hud.mjs",
-    "build": "esbuild tactical-hud.ts --bundle --outfile=dist/tactical-hud.js --format=iife --target=es2020 && esbuild screen-relay.ts --bundle --outfile=dist/screen-relay.js --format=iife --target=es2020",
-    "typecheck": "tsc --noEmit"
+    "start": "tsx src/server/index.ts",
+    "hop": "tsx src/cli/hop-reporter.ts",
+    "build:ui": "esbuild tactical-hud.ts --bundle --outfile=dist/tactical-hud.js --format=iife --target=es2020 && esbuild screen-relay.ts --bundle --outfile=dist/screen-relay.js --format=iife --target=es2020",
+    "build": "npm run build:ui",
+    "typecheck": "tsc --noEmit",
+    "extract:theories": "node scripts/extract-py-arrays.mjs"
+  },
+  "dependencies": {
+    "@stoprocent/noble": "^2.5.5"
   },
   "devDependencies": {
+    "@types/node": "^26.0.1",
     "esbuild": "^0.25.0",
+    "tsx": "^4.22.4",
     "typescript": "^5.8.2"
   }
 }

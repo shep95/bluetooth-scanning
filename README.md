@@ -4,9 +4,9 @@
 
 **#houseofasher tactical BLE discovery — sci-fi HUD, domino hop chains, and honest device naming.**
 
-[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-3b82f6?style=for-the-badge&logo=python&logoColor=white)](requirements.txt)
-[![Platform](https://img.shields.io/badge/platform-Windows-0078d4?style=for-the-badge&logo=windows&logoColor=white)](#)
-[![BLE](https://img.shields.io/badge/stack-bleak%20%2B%20WinRT-8b5cf6?style=for-the-badge&logo=bluetooth&logoColor=white)](#)
+[![Node.js 18+](https://img.shields.io/badge/node-18%2B-22c55e?style=for-the-badge&logo=nodedotjs&logoColor=white)](package.json)
+[![TypeScript](https://img.shields.io/badge/stack-TypeScript-3178c6?style=for-the-badge&logo=typescript&logoColor=white)](package.json)
+[![BLE](https://img.shields.io/badge/BLE-%40stoprocent%2Fnoble-8b5cf6?style=for-the-badge&logo=bluetooth&logoColor=white)](package.json)
 [![Brand](https://img.shields.io/badge/%23houseofasher-tactical-ff3355?style=for-the-badge)](#tactical-operations-houseofasher)
 [![License](https://img.shields.io/badge/license-MIT-22c55e?style=for-the-badge)](#license)
 
@@ -20,16 +20,16 @@
 
 ## Overview
 
-**Bluetooth Scanning** is a consent-based, local-first BLE scanner for Windows. It discovers nearby Low Energy devices through the OS Bluetooth stack (via [bleak](https://github.com/hbldh/bleak)), resolves human-readable names from multiple sources, and serves a live dashboard at `http://127.0.0.1:8765`.
+**Bluetooth Scanning** is a consent-based, local-first BLE scanner for Windows. It discovers nearby Low Energy devices via **Node.js + @stoprocent/noble** (WinRT bindings), resolves human-readable names from multiple sources, and serves a live dashboard at `http://127.0.0.1:8765`.
 
 | | |
 |---|---|
+| **Stack** | **100% TypeScript** — Node server, noble BLE, esbuild HUD bundles |
 | **Scan model** | Continuous sweep — radio never stops; **SYNC HOPS** refreshes hop graph + GATT batch |
 | **HUD** | Mission phases, chrono blackbox, Leaflet map, 3D hop battlefield, intel panels, sonar audio |
 | **Naming** | Broadcast → paired registry → GATT → inference → MAC suffix |
 | **Intel** | Passive adv archaeology + deep GATT pull + per-device theory chains |
 | **Theories** | **111** narrative → flaw → fix → code chains (incl. PoseSense WiFi CSI + security) |
-| **Stack** | Python · bleak · WinRT · Leaflet · Three.js HUD · optional TypeScript client |
 | **Privacy** | Runs on localhost; consent-based; `silent_observe` disables GATT connect |
 
 ---
@@ -43,11 +43,11 @@ flowchart TB
         LIST[Device list + name badges]
     end
 
-    subgraph Server["ble-scan-server.py"]
-        HTTP[Threading HTTP server]
-        STATE[ScanState + lock]
-        SCAN[BleakScanner active mode]
-        NAME[ble_device_naming]
+    subgraph Server["src/server (Node)"]
+        HTTP[HTTP API + static HUD]
+        STATE[ScanState]
+        SCAN[@stoprocent/noble]
+        NAME[src/ble/device-naming]
     end
 
     subgraph OS["Windows"]
@@ -134,8 +134,7 @@ flowchart LR
 ### Prerequisites
 
 - **Windows 10/11** with Bluetooth adapter
-- **Python 3.10+**
-- **Node.js 18+** (to build TypeScript HUD bundles — one-time)
+- **Node.js 18+**
 - Bluetooth **ON**
 - Windows **Location** enabled (required for BLE scan on many builds)
 
@@ -145,10 +144,9 @@ flowchart LR
 git clone https://github.com/houseofasher/bluetooth_software.git
 # or: git clone https://github.com/shep95/bluetooth-scanning.git
 cd bluetooth-scanning  # or bluetooth_software
-pip install -r requirements.txt
 npm install
 npm run build
-python ble-scan-server.py
+npm start
 ```
 
 Open **http://127.0.0.1:8765** — sweep **auto-starts** and runs forever (no device-count stop). Domino hop graph refreshes every 5s.
@@ -157,11 +155,11 @@ For multi-hop chains, run a companion in a loop:
 
 ```bash
 # Phone / second PC as hop bridge
-python hop_reporter.py --loop --node-id pixel-hop --label "Pixel 9" \
+npm run hop -- --loop --node-id pixel-hop --label "Pixel 9" \
   --self-address C0:1C:6A:A4:93:C6 --server http://YOUR_PC_IP:8765
 
 # Fixed listening post (dead drop)
-python hop_reporter.py --loop --listening-post --node-id post-1 --label "Listening Post A" \
+npm run hop -- --loop --listening-post --node-id post-1 --label "Listening Post A" \
   --server http://YOUR_PC_IP:8765
 ```
 
@@ -177,7 +175,7 @@ Open the HUD → allow **Share scanner GPS** (auto-requested on load). The map s
 | Colored rings + dots | BLE contacts at RSSI distance — bearing illustrative only |
 
 ```bash
-python hop_reporter.py --loop --node-id pixel-hop --label "Pixel 9" \
+npm run hop -- --loop --node-id pixel-hop --label "Pixel 9" \
   --latitude 40.7128 --longitude -74.0060 --server http://YOUR_PC_IP:8765
 ```
 
@@ -227,7 +225,7 @@ narrative → flaw (technical | security | privacy | legal | ethical | operation
 | **tactical** | 30 | `ble_sci_fi.py`, `ble_tactical.py` | Clone clusters, spoof alerts, ghost trails, cipher exfil |
 | **passive** | 9 | `ble_adv_intel.py`, `ble_device_naming.py` | iBeacon, Eddystone, Apple continuity, Swift Pair |
 | **gatt** | 14 | `ble_gatt_pull.py` | Battery, DIS dossier, HR notify, full GATT atlas |
-| **security** | 20 | `ble-scan-server.py`, `ble_theory.py` | Local bind, hop report auth, XOR cipher limits, serial exposure |
+| **security** | 20 | `src/server`, `src/ble/theory.ts` | Local bind, hop report auth, XOR cipher limits, serial exposure |
 | **screen_relay** | 20 | `ble_screen_relay.py` | scrcpy, AirPlay, WebRTC, HDMI, companion frame relay |
 | **wifi_pose** | 10 | `ble_wifi_pose.py` | PoseSense — CMU WiFi CSI body pose + BLE identity fusion |
 | **architecture** | 10 | `ble_hop_graph.py`, `ble_hop_merge.py` | Domino graph, hop merge to root mapper |
@@ -290,7 +288,7 @@ Mission brief (`GET /api/brief`) includes a **Security & ethics** section with l
 **Phone on Wi‑Fi:** restart server with LAN bind:
 ```powershell
 $env:BLE_BIND_ALL="1"
-python ble-scan-server.py
+npm start
 ```
 Then HUD → **SCREEN RELAY** on a contact → scan QR → **START SHARE** on phone.
 
@@ -504,7 +502,7 @@ Root mapper **merges** all reports into one contact list (`hopRelay` in `/api/de
 
 ```bash
 # Phone must reach PC — use LAN IP; set BLE_BIND_ALL=1 on server if needed
-python hop_reporter.py --loop --node-id pixel-hop --label "Pixel 9" \
+npm run hop -- --loop --node-id pixel-hop --label "Pixel 9" \
   --self-address C0:1C:6A:A4:93:C6 \
   --server http://192.168.1.10:8765
 ```
@@ -524,30 +522,18 @@ python hop_reporter.py --loop --node-id pixel-hop --label "Pixel 9" \
 
 ```
 bluetooth-scanning/
-├── ble-scan-server.py      # HTTP server + persistent scan + auto GATT pull
-├── tactical_hud.html       # #houseofasher tactical HUD (Leaflet map + intel panels)
-├── ble_frame_store.py      # JPEG frame ingest + relay sessions
-├── screen_relay.html       # Sender page — START SHARE → POST frames
-├── ble_screen_relay.py     # Screen mirror theories (scrcpy, AirPlay, WebRTC, HDMI…)
-├── ble_wifi_pose.py        # PoseSense — CMU WiFi CSI pose theories + BLE fusion spec
-├── ble_theory.py           # Unified 111-chain narrative→flaw→fix→code corpus
-├── ble_tactical.py         # Chrono, fingerprints, trails, scenarios, exfil
-├── ble_sci_fi.py           # Extended theory engine (clone, spoof, quorum, replay…)
-├── ble_adv_intel.py        # Passive adv archaeology (iBeacon, Eddystone, mfg hints)
-├── ble_gatt_pull.py        # Deep GATT exfil + service atlas + exfil tiers
-├── ble_hop_graph.py        # Cooperative domino hop graph + relay scores
-├── ble_hop_merge.py        # Merge hop scanner observations into root device list
-├── ble_location.py         # Scanner GPS + Nominatim reverse geocode
-├── ble_distance.py         # RSSI → distance estimate + proximity zones
-├── ble_enrichment.py       # Merge naming, distance, passive, GATT, theories
-├── ble_device_naming.py    # Multi-source name resolution
-├── ble_paired_windows.py   # Windows paired device registry lookup
-├── hop_reporter.py         # Companion scanner CLI (hop node / listening post)
-├── bluetooth-client.ts     # TypeScript API client (all endpoints)
-├── tactical-hud.ts         # HUD logic (bundled → dist/tactical-hud.js)
-├── screen-relay.ts         # Screen share sender (bundled → dist/screen-relay.js)
-├── package.json            # npm run build / typecheck
-├── requirements.txt
+├── src/
+│   ├── server/           # HTTP API, scan loop (npm start)
+│   ├── ble/              # Naming, GATT, hop graph, enrichment, theory
+│   ├── engine/           # Tactical, sci-fi, screen-relay, wifi-pose
+│   ├── cli/              # hop-reporter.ts (npm run hop)
+│   └── data/             # theory-arrays.json (111 chains)
+├── tactical_hud.html     # HUD shell → dist/tactical-hud.js
+├── screen_relay.html     # Screen share sender
+├── bluetooth-client.ts   # Browser API client
+├── tactical-hud.ts       # HUD logic
+├── screen-relay.ts       # Relay sender logic
+├── package.json
 └── README.md
 ```
 

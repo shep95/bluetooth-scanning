@@ -1,4 +1,4 @@
-import { BluetoothClient } from "./bluetooth-client";
+import { BluetoothClient } from "./bluetooth-client.js";
 
 const client = new BluetoothClient();
 const params = new URLSearchParams(location.search);
