@@ -135,6 +135,7 @@ flowchart LR
 
 - **Windows 10/11** with Bluetooth adapter
 - **Python 3.10+**
+- **Node.js 18+** (to build TypeScript HUD bundles — one-time)
 - Bluetooth **ON**
 - Windows **Location** enabled (required for BLE scan on many builds)
 
@@ -145,6 +146,8 @@ git clone https://github.com/houseofasher/bluetooth_software.git
 # or: git clone https://github.com/shep95/bluetooth-scanning.git
 cd bluetooth-scanning  # or bluetooth_software
 pip install -r requirements.txt
+npm install
+npm run build
 python ble-scan-server.py
 ```
 
@@ -401,20 +404,56 @@ Background pull: every 45s + on **SYNC HOPS**. Manual: **PULL GATT** per device 
 
 ---
 
-### TypeScript client (optional)
+### TypeScript client (all API calls)
+
+The HUD and screen relay pages load bundled JS from `dist/` — all `fetch()` calls go through `bluetooth-client.ts`.
+
+```bash
+npm run build    # dist/tactical-hud.js + dist/screen-relay.js
+npm run typecheck
+```
 
 ```typescript
 import { BluetoothClient } from "./bluetooth-client";
 
 const client = new BluetoothClient();
-await client.setScenario("perimeter");
 
+// Health & sweep
+await client.checkHealth();
+await client.triggerScan();
+const snap = await client.getDevices();
+await client.stopScan();
+
+// Tactical & intel
+await client.getTactical();
+await client.getTheories();
+await client.getDossier("AA:BB:CC:DD:EE:FF");
+await client.pullDeviceData("AA:BB:CC:DD:EE:FF");
+await client.setScenario("perimeter");
+await client.toggleWatchlist("AA:BB:CC:DD:EE:FF");
+
+// Location & hop
+await client.setScannerLocation(40.44, -79.94, 12);
+await client.getHopGraph();
+await client.reportHop({ scannerId: "pixel-hop", devices: [] });
+
+// Screen relay & PoseSense
+await client.createScreenSession({ deviceAddress: "…", label: "Pixel 9" });
+client.latestScreenFrameUrl(sessionId);
+await client.postScreenFrame({ sessionId, frameJpeg: "…", width: 1080, height: 1920, ts: Date.now() });
+await client.getScreenRelay("AA:BB:CC:DD:EE:FF");
+await client.getWifiPose();
+
+// Streams & exports
+client.openWarRoomStream((e) => console.log(e.message));
+window.location.href = client.extractionUrl("zip");
+window.open(client.briefUrl(), "_blank");
+
+// Programmatic polling helper
 const scan = await client.startScan({
   onUpdate: (s) => console.log(s.missionLabel, s.tactical?.ticker, s.count),
 });
-
 await scan.stop();
-window.location.href = client.extractionUrl("zip");
 ```
 
 ---
@@ -504,7 +543,10 @@ bluetooth-scanning/
 ├── ble_device_naming.py    # Multi-source name resolution
 ├── ble_paired_windows.py   # Windows paired device registry lookup
 ├── hop_reporter.py         # Companion scanner CLI (hop node / listening post)
-├── bluetooth-client.ts     # TypeScript API client
+├── bluetooth-client.ts     # TypeScript API client (all endpoints)
+├── tactical-hud.ts         # HUD logic (bundled → dist/tactical-hud.js)
+├── screen-relay.ts         # Screen share sender (bundled → dist/screen-relay.js)
+├── package.json            # npm run build / typecheck
 ├── requirements.txt
 └── README.md
 ```

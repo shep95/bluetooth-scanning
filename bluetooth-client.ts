@@ -1,13 +1,14 @@
-// bluetooth-client.ts — #houseofasher tactical BLE client
+// bluetooth-client.ts — #houseofasher tactical BLE client (all API calls)
 
 export type HexString = `0x${string}`;
-
 export type NameSource = "broadcast" | "paired" | "gatt" | "inferred" | "address";
 export type ProximityZone = "immediate" | "near" | "far" | "unknown";
 export type ScanPhase = "idle" | "running" | "resolving" | "pulling" | "completed" | "failed";
 export type ThreatTier = "friendly" | "known" | "unknown" | "priority" | "breach";
 export type MovementTrend = "approaching" | "receding" | "static" | "unknown";
 export type ScenarioId = "standard" | "perimeter" | "asset_recovery" | "silent_observe" | "deep_pull";
+export type ExfilTier = "OPEN" | "PARTIAL" | "LOCKED" | "PASSIVE_ONLY" | "UNKNOWN";
+export type FlawType = "security" | "privacy" | "legal" | "ethical" | "technical" | "operational";
 
 export interface HealthStatus {
   ready: boolean;
@@ -40,6 +41,27 @@ export interface PulledDeviceData {
   data: Record<string, string | number>;
   errors: string[];
   pulledAt: number;
+  exfilTier?: ExfilTier;
+}
+
+export interface PassiveIntel {
+  broadcastName?: string | null;
+  connectableGuess?: string | null;
+  txPower?: number | null;
+  beacons?: Array<{ type?: string; label?: string; uuid?: string; raw?: string }>;
+  ecosystemHints?: string[];
+  manufacturerRecords?: Array<{ companyName: string; hex?: string }>;
+  serviceLabels?: string[];
+}
+
+export interface TheoryChain {
+  id: string;
+  narrative: string;
+  flaw: string;
+  fix: string;
+  code?: string;
+  flawType?: FlawType;
+  chain?: string;
 }
 
 export interface ScannedDevice {
@@ -60,7 +82,7 @@ export interface ScannedDevice {
   distanceNote: string;
   location: DeviceLocationContext;
   pulledData: PulledDeviceData | null;
-  pullStatus: "pending" | "ok" | "failed" | "empty";
+  pullStatus: "pending" | "ok" | "failed" | "empty" | "hop_relay";
   uuids: string[];
   source?: string;
   lastSeen: number;
@@ -71,6 +93,18 @@ export interface ScannedDevice {
   ghostTrail?: Array<{ ts: number; rssi: number | null; distanceMeters: number | null }>;
   hopDepth?: number | null;
   triangulation?: Record<string, unknown>;
+  passiveIntel?: PassiveIntel;
+  gattAtlas?: Array<Record<string, unknown>>;
+  theories?: TheoryChain[];
+  exfilTier?: ExfilTier;
+  charLabels?: Record<string, string>;
+  intelSummary?: string[];
+  sciFi?: Record<string, unknown>;
+  hopRelayOnly?: boolean;
+  reportedByScanner?: string;
+  alsoReportedBy?: string[];
+  macAddress?: string;
+  identityAddress?: string;
 }
 
 export interface TacticalSnapshot {
@@ -86,6 +120,12 @@ export interface TacticalSnapshot {
   relayScores: Array<{ nodeId: string; label: string; score: number; contacts: number; bridges: number }>;
   dominoBreaches: Array<{ target: string; hopDepth: number; breachLabel: string; path: string[] }>;
   ticker: string;
+  sciFi?: Record<string, unknown>;
+}
+
+export interface HopRelaySummary {
+  directContacts: number;
+  relayOnlyContacts: number;
 }
 
 export interface ScanSnapshot {
@@ -99,6 +139,113 @@ export interface ScanSnapshot {
   zeroResultHint: string | null;
   hopGraph?: Record<string, unknown>;
   tactical?: TacticalSnapshot;
+  persistent?: boolean;
+  startedAt?: number;
+  hopIngestCount?: number;
+  hopRelay?: HopRelaySummary;
+}
+
+export interface ScenarioOption {
+  id: ScenarioId;
+  label: string;
+  description?: string;
+}
+
+export interface ScenarioListResponse {
+  active: ScenarioId;
+  scenarios: ScenarioOption[];
+}
+
+export interface TheoriesSnapshot {
+  pattern?: string;
+  total?: number;
+  wifiPose?: TheoryChain[];
+  screenRelay?: TheoryChain[];
+  security?: TheoryChain[];
+  tactical?: TheoryChain[];
+  passive?: TheoryChain[];
+  gatt?: TheoryChain[];
+  architecture?: TheoryChain[];
+  securitySummary?: Record<string, unknown>;
+}
+
+export interface ReplayFrame {
+  ts: number;
+  count: number;
+  maxHopDepth?: number;
+}
+
+export interface ReplaySnapshot {
+  frames: ReplayFrame[];
+}
+
+export interface ScreenRelayRecommendation {
+  narrative?: string;
+  guessedPlatform?: string;
+  gattExfilTier?: string;
+  recommendedTheoryId?: string;
+  recommendedFix?: string;
+  recommendedCode?: string;
+  operatorSteps?: string[];
+}
+
+export interface ScreenRelaySnapshot {
+  recommendation?: ScreenRelayRecommendation;
+  honestLimit?: string;
+  bindAll?: boolean;
+  lanIp?: string;
+  frameStore?: Record<string, unknown>;
+}
+
+export interface WifiPoseSnapshot {
+  story?: { protagonist?: string; subject?: string; scene?: string };
+  cmuResearch?: { summary?: string };
+  honestLimit?: string;
+  fusion?: { fusionSteps?: string[] };
+}
+
+export interface ScreenSessionInfo {
+  sessionId: string;
+}
+
+export interface ScreenSessionResponse {
+  ok: boolean;
+  session?: ScreenSessionInfo;
+  urls?: { relayPage?: string };
+  phoneNote?: string;
+  error?: string;
+}
+
+export interface ScreenFramePayload {
+  sessionId: string;
+  deviceAddress?: string;
+  label?: string;
+  frameJpeg: string;
+  width: number;
+  height: number;
+  ts: number;
+}
+
+export interface ScreenFrameResponse {
+  ok: boolean;
+  frameCount?: number;
+  error?: string;
+}
+
+export interface HopReportPayload {
+  scannerId: string;
+  label?: string;
+  latitude?: number;
+  longitude?: number;
+  devices: Array<Record<string, unknown>>;
+}
+
+export interface ScanTriggerResponse {
+  ok?: boolean;
+  alreadyRunning?: boolean;
+  continuous?: boolean;
+  persistent?: boolean;
+  error?: string;
 }
 
 export interface ScanOptions {
@@ -127,6 +274,11 @@ export interface ConnectedDevice {
   readOnce?: () => Promise<DataView>;
 }
 
+export interface WarRoomEvent {
+  type: string;
+  message: string;
+}
+
 const DEFAULT_BASE = "http://127.0.0.1:8765";
 
 function assertNotAborted(signal?: AbortSignal): void {
@@ -147,6 +299,10 @@ export class BluetoothClient {
     this.baseUrl = baseUrl.replace(/\/$/, "");
   }
 
+  public getBaseUrl(): string {
+    return this.baseUrl;
+  }
+
   public async checkHealth(): Promise<HealthStatus> {
     return fetchJson<HealthStatus>(`${this.baseUrl}/api/health`);
   }
@@ -159,8 +315,77 @@ export class BluetoothClient {
     return fetchJson<TacticalSnapshot>(`${this.baseUrl}/api/tactical`);
   }
 
+  public async getHopGraph(): Promise<Record<string, unknown>> {
+    return fetchJson(`${this.baseUrl}/api/hop/graph`);
+  }
+
+  public async getChrono(): Promise<{ events: TacticalSnapshot["chrono"] }> {
+    return fetchJson(`${this.baseUrl}/api/chrono`);
+  }
+
+  public async getTheories(): Promise<TheoriesSnapshot> {
+    return fetchJson<TheoriesSnapshot>(`${this.baseUrl}/api/theories`);
+  }
+
+  public async getReplay(): Promise<ReplaySnapshot> {
+    return fetchJson<ReplaySnapshot>(`${this.baseUrl}/api/replay`);
+  }
+
+  public async getScenarios(): Promise<ScenarioListResponse> {
+    return fetchJson<ScenarioListResponse>(`${this.baseUrl}/api/scenario`);
+  }
+
   public async getDossier(address: string): Promise<Record<string, unknown>> {
     return fetchJson(`${this.baseUrl}/api/dossier?address=${encodeURIComponent(address)}`);
+  }
+
+  public async getScreenRelay(address?: string): Promise<ScreenRelaySnapshot> {
+    const q = address ? `?address=${encodeURIComponent(address)}` : "";
+    return fetchJson<ScreenRelaySnapshot>(`${this.baseUrl}/api/screen/relay${q}`);
+  }
+
+  public async getWifiPose(address?: string): Promise<WifiPoseSnapshot> {
+    const q = address ? `?address=${encodeURIComponent(address)}` : "";
+    return fetchJson<WifiPoseSnapshot>(`${this.baseUrl}/api/wifi/pose${q}`);
+  }
+
+  public async getScreenSessions(): Promise<Record<string, unknown>> {
+    return fetchJson(`${this.baseUrl}/api/screen/sessions`);
+  }
+
+  public latestScreenFrameUrl(sessionId: string, cacheBust = true): string {
+    const url = `${this.baseUrl}/api/screen/frame/latest?session=${encodeURIComponent(sessionId)}`;
+    return cacheBust ? `${url}&t=${Date.now()}` : url;
+  }
+
+  public async createScreenSession(opts: {
+    deviceAddress?: string;
+    label?: string;
+  }): Promise<ScreenSessionResponse> {
+    return fetchJson<ScreenSessionResponse>(`${this.baseUrl}/api/screen/session`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        deviceAddress: opts.deviceAddress,
+        label: opts.label,
+      }),
+    });
+  }
+
+  public async postScreenFrame(payload: ScreenFramePayload): Promise<ScreenFrameResponse> {
+    return fetchJson<ScreenFrameResponse>(`${this.baseUrl}/api/screen/frame`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+  }
+
+  public async reportHop(payload: HopReportPayload): Promise<{ ok: boolean }> {
+    return fetchJson(`${this.baseUrl}/api/hop/report`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
   }
 
   public async setScenario(scenario: ScenarioId): Promise<{ ok: boolean; scenario: Record<string, unknown> }> {
@@ -179,17 +404,31 @@ export class BluetoothClient {
     });
   }
 
-  public extractionUrl(format: "json" | "zip" = "zip"): string {
+  public extractionUrl(format: "json" | "zip" | "cipher" = "zip", password?: string): string {
+    if (format === "cipher" && password) {
+      return `${this.baseUrl}/api/extract?format=cipher&password=${encodeURIComponent(password)}`;
+    }
     return `${this.baseUrl}/api/extract?format=${format}`;
   }
 
-  public openWarRoomStream(onEvent: (event: { type: string; message: string }) => void): EventSource {
+  public briefUrl(): string {
+    return `${this.baseUrl}/api/brief`;
+  }
+
+  public relayPageUrl(sessionId: string, address?: string, label?: string): string {
+    const params = new URLSearchParams({ session: sessionId });
+    if (address) params.set("address", address);
+    if (label) params.set("label", label);
+    return `${this.baseUrl}/relay?${params.toString()}`;
+  }
+
+  public openWarRoomStream(onEvent: (event: WarRoomEvent) => void): EventSource {
     const es = new EventSource(`${this.baseUrl}/api/events/stream`);
     es.onmessage = (ev) => {
       try {
-        onEvent(JSON.parse(ev.data));
+        onEvent(JSON.parse(ev.data) as WarRoomEvent);
       } catch {
-        // ignore
+        // ignore malformed events
       }
     };
     return es;
@@ -219,6 +458,20 @@ export class BluetoothClient {
     });
   }
 
+  public async triggerScan(): Promise<ScanTriggerResponse> {
+    const res = await fetch(`${this.baseUrl}/api/scan`, { method: "POST" });
+    const data = (await res.json()) as ScanTriggerResponse;
+    if (!res.ok) throw new Error(data.error ?? res.statusText);
+    return data;
+  }
+
+  public async stopScan(): Promise<{ ok: boolean; persistent?: boolean; message?: string }> {
+    const res = await fetch(`${this.baseUrl}/api/stop`, { method: "POST" });
+    const data = (await res.json()) as { ok: boolean; persistent?: boolean; message?: string; error?: string };
+    if (!res.ok) throw new Error(data.error ?? res.statusText);
+    return data;
+  }
+
   public async startScan(opts: ScanOptions = {}): Promise<ScanHandle> {
     assertNotAborted(opts.signal);
 
@@ -227,7 +480,7 @@ export class BluetoothClient {
       throw new Error(health.message);
     }
 
-    await fetchJson(`${this.baseUrl}/api/scan`, { method: "POST" });
+    await this.triggerScan();
 
     let latest: ScanSnapshot | null = null;
     let timer: ReturnType<typeof setInterval> | null = null;
@@ -247,7 +500,7 @@ export class BluetoothClient {
     const stop = async () => {
       if (timer) clearInterval(timer);
       timer = null;
-      await fetch(`${this.baseUrl}/api/stop`, { method: "POST" }).catch(() => {});
+      await this.stopScan().catch(() => {});
       await pollOnce();
     };
 
@@ -264,11 +517,12 @@ export class BluetoothClient {
   public async connectViaBrowser(opts: ConnectOptions = {}): Promise<ConnectedDevice> {
     assertNotAborted(opts.signal);
 
-    if (typeof navigator === "undefined" || !("bluetooth" in navigator)) {
+    if (typeof navigator === "undefined" || !navigator.bluetooth) {
       throw new Error("Web Bluetooth not available in this browser.");
     }
 
-    const device = await navigator.bluetooth.requestDevice({
+    const bluetooth = navigator.bluetooth;
+    const device = await bluetooth.requestDevice({
       acceptAllDevices: true,
       optionalServices: opts.optionalServices ?? [],
     });

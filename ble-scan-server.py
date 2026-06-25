@@ -513,6 +513,9 @@ _RELAY_HTML_PATH = Path(__file__).with_name("screen_relay.html")
 RELAY_HTML = _RELAY_HTML_PATH.read_text(encoding="utf-8") if _RELAY_HTML_PATH.exists() else "<h1>screen_relay.html missing</h1>"
 
 
+_DIST_DIR = Path(__file__).with_name("dist")
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args) -> None:
         pass
@@ -532,6 +535,34 @@ class Handler(BaseHTTPRequestHandler):
         body = self.rfile.read(length)
         return json.loads(body.decode("utf-8"))
 
+    def _serve_dist(self, path: str) -> bool:
+        if not path.startswith("/dist/"):
+            return False
+        rel = path[len("/dist/") :]
+        if not rel or ".." in rel or rel.startswith("/"):
+            self.send_error(403)
+            return True
+        file_path = _DIST_DIR / rel
+        if not file_path.is_file():
+            self.send_error(404)
+            return True
+        if rel.endswith(".js"):
+            content_type = "application/javascript; charset=utf-8"
+        elif rel.endswith(".css"):
+            content_type = "text/css; charset=utf-8"
+        elif rel.endswith(".map"):
+            content_type = "application/json; charset=utf-8"
+        else:
+            content_type = "application/octet-stream"
+        body = file_path.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+        self.wfile.write(body)
+        return True
+
     def do_GET(self) -> None:
         path = urlparse(self.path).path
 
@@ -547,6 +578,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/favicon.ico":
             self.send_response(204)
             self.end_headers()
+            return
+
+        if self._serve_dist(path):
             return
 
         if path in ("/relay", "/relay.html"):

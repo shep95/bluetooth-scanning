@@ -5,6 +5,7 @@ __pycache__/
 venv/
 env/
 node_modules/
+dist/
 ble-scan-node/
 *.log
 .DS_Store
