@@ -226,6 +226,8 @@ narrative → flaw (technical | security | privacy | legal | ethical | operation
 | **gatt** | 14 | `ble_gatt_pull.py` | Battery, DIS dossier, HR notify, full GATT atlas |
 | **security** | 20 | `ble-scan-server.py`, `ble_theory.py` | Local bind, hop report auth, XOR cipher limits, serial exposure |
 | **screen_relay** | 20 | `ble_screen_relay.py` | scrcpy, AirPlay, WebRTC, HDMI, companion frame relay |
+| **wifi_pose** | 10 | `ble_wifi_pose.py` | PoseSense — CMU WiFi CSI body pose + BLE identity fusion |
+| **architecture** | 10 | `ble_hop_graph.py`, `ble_hop_merge.py` | Domino graph, hop merge to root mapper |
 
 **Live catalog:** `GET /api/theories` — filterable in the HUD by flaw type (security, privacy, legal, etc.)
 
@@ -245,6 +247,20 @@ Each device record includes `theories[]` — applicable chains for that contact 
 | Co-location inference | Co-location ≠ device's home address | `contextNote` — scanner GPS only |
 
 Mission brief (`GET /api/brief`) includes a **Security & ethics** section with live counts (GATT locked, serials read, health reads).
+
+### PoseSense · WiFi body pose (`ble_wifi_pose.py`) — Wayne / Dr. Emily
+
+**Narrative:** Carnegie Mellon University research showed **WiFi CSI** can reconstruct **full body pose** as someone moves in a room. Wayne's PoseSense idea: fuse that with BLE so you see **movement and identity** — who is where.
+
+| Theory | Flaw | Fix in this repo |
+|:---|:---|:---|
+| PoseSense vision | BLE has no skeleton | WiFi CSI node + BLE fingerprint fusion |
+| CMU WiFi pose | Commodity WiFi hides CSI | Cooperative ESP32 / research NIC → `POST /api/wifi/pose` |
+| Identity + pose | WiFi pose is anonymous | `recommend_pose_fusion()` + hop custody |
+| Dr. Emily demo | Needs lab + consent | Ethical gate — cooperative subject only |
+| Until CSI online | No pose hardware yet | `tomography_grid` + `ghost_trail` as honest proxy |
+
+`GET /api/wifi/pose` — story, CMU notes, fusion steps. HUD **PoseSense** panel.
 
 ### Screen relay theories (`ble_screen_relay.py`) — 20 chains
 
